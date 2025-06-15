@@ -1,3 +1,4 @@
+## Uwaga - easteregg działa tylko w sobotę.
 import requests
 import json
 import subprocess
