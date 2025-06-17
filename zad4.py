@@ -11,6 +11,7 @@ POPRAWKA: Lepsze wykrywanie silnika z agent.py
 import argparse
 import os
 import sys
+
 import requests
 from dotenv import load_dotenv
 
@@ -18,8 +19,11 @@ load_dotenv(override=True)
 
 # POPRAWKA: Dodano argumenty CLI jak w innych zadaniach
 parser = argparse.ArgumentParser(description="Cenzura danych (multi-engine + Claude)")
-parser.add_argument("--engine", choices=["openai", "lmstudio", "anything", "gemini", "claude"],
-                    help="LLM backend to use")
+parser.add_argument(
+    "--engine",
+    choices=["openai", "lmstudio", "anything", "gemini", "claude"],
+    help="LLM backend to use",
+)
 args = parser.parse_args()
 
 # POPRAWKA: Lepsze wykrywanie silnika (jak w poprawionych zad1.py i zad2.py)
@@ -65,6 +69,7 @@ if not CENTRALA_API_KEY or not REPORT_URL or not CENZURA_URL:
     print("❌ Brak ustawienia CENTRALA_API_KEY, REPORT_URL lub CENZURA_URL w .env")
     sys.exit(1)
 
+
 def download_text(url: str) -> str:
     try:
         resp = requests.get(url, timeout=10)
@@ -73,6 +78,7 @@ def download_text(url: str) -> str:
     except Exception as e:
         print(f"❌ Błąd podczas pobierania danych: {e}")
         sys.exit(1)
+
 
 # --- ULTRA-TWARDY PROMPT ---
 PROMPT_SYSTEM = (
@@ -95,59 +101,74 @@ PROMPT_SYSTEM = (
     "Dane podejrzanego: CENZURA, lat CENZURA, mieszka w CENZURA, ul. CENZURA."
 )
 
+
 def censor_llm(text: str) -> str:
     prompt_user = (
         "Tekst do cenzury (nie zmieniaj nic poza danymi osobowymi, przykład wyżej!):\n"
         + text
     )
-    
+
     # --- OpenAI ---
     if ENGINE == "openai":
         OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
         OPENAI_API_URL = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1")
-        MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_OPENAI", "gpt-4o-mini")
-        
+        MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+            "MODEL_NAME_OPENAI", "gpt-4o-mini"
+        )
+
         if not OPENAI_API_KEY:
             print("❌ Brak OPENAI_API_KEY", file=sys.stderr)
             sys.exit(1)
-            
+
         try:
             from openai import OpenAI
         except ImportError:
             print("❌ Musisz zainstalować openai: pip install openai", file=sys.stderr)
             sys.exit(1)
-            
+
         client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_URL)
         resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": PROMPT_SYSTEM},
-                {"role": "user", "content": prompt_user}
+                {"role": "user", "content": prompt_user},
             ],
-            temperature=0
+            temperature=0,
         )
         # Liczenie tokenów
         tokens = resp.usage
-        cost = tokens.prompt_tokens/1_000_000*0.60 + tokens.completion_tokens/1_000_000*2.40
-        print(f"[📊 Prompt: {tokens.prompt_tokens} | Completion: {tokens.completion_tokens} | Total: {tokens.total_tokens}]")
+        cost = (
+            tokens.prompt_tokens / 1_000_000 * 0.60
+            + tokens.completion_tokens / 1_000_000 * 2.40
+        )
+        print(
+            f"[📊 Prompt: {tokens.prompt_tokens} | Completion: {tokens.completion_tokens} | Total: {tokens.total_tokens}]"
+        )
         print(f"[💰 Koszt OpenAI: {cost:.6f} USD]")
         return resp.choices[0].message.content.strip()
-    
+
     # --- Claude ---
     elif ENGINE == "claude":
         CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
-        MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_CLAUDE", "claude-sonnet-4-20250514")
-        
+        MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+            "MODEL_NAME_CLAUDE", "claude-sonnet-4-20250514"
+        )
+
         if not CLAUDE_API_KEY:
-            print("❌ Brak CLAUDE_API_KEY lub ANTHROPIC_API_KEY w .env", file=sys.stderr)
+            print(
+                "❌ Brak CLAUDE_API_KEY lub ANTHROPIC_API_KEY w .env", file=sys.stderr
+            )
             sys.exit(1)
-            
+
         try:
             from anthropic import Anthropic
         except ImportError:
-            print("❌ Musisz zainstalować anthropic: pip install anthropic", file=sys.stderr)
+            print(
+                "❌ Musisz zainstalować anthropic: pip install anthropic",
+                file=sys.stderr,
+            )
             sys.exit(1)
-        
+
         claude_client = Anthropic(api_key=CLAUDE_API_KEY)
         resp = claude_client.messages.create(
             model=MODEL_NAME,
@@ -155,119 +176,133 @@ def censor_llm(text: str) -> str:
                 {"role": "user", "content": PROMPT_SYSTEM + "\n\n" + prompt_user}
             ],
             temperature=0,
-            max_tokens=4000
+            max_tokens=4000,
         )
-        
+
         # Liczenie tokenów Claude
         usage = resp.usage
         cost = usage.input_tokens * 0.00003 + usage.output_tokens * 0.00015
-        print(f"[📊 Prompt: {usage.input_tokens} | Completion: {usage.output_tokens} | Total: {usage.input_tokens + usage.output_tokens}]")
+        print(
+            f"[📊 Prompt: {usage.input_tokens} | Completion: {usage.output_tokens} | Total: {usage.input_tokens + usage.output_tokens}]"
+        )
         print(f"[💰 Koszt Claude: {cost:.6f} USD]")
-        
+
         return resp.content[0].text.strip()
-    
+
     # --- Gemini (Google) ---
     elif ENGINE == "gemini":
         GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-        MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_GEMINI", "gemini-2.5-pro-latest")
-        
+        MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+            "MODEL_NAME_GEMINI", "gemini-2.5-pro-latest"
+        )
+
         if not GEMINI_API_KEY:
             print("❌ Brak GEMINI_API_KEY w .env", file=sys.stderr)
             sys.exit(1)
-            
+
         try:
             import google.generativeai as genai
         except ImportError:
-            print("❌ Musisz zainstalować google-generativeai: pip install google-generativeai", file=sys.stderr)
+            print(
+                "❌ Musisz zainstalować google-generativeai: pip install google-generativeai",
+                file=sys.stderr,
+            )
             sys.exit(1)
-            
+
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel(MODEL_NAME)
         response = model.generate_content(
             [PROMPT_SYSTEM + "\n" + prompt_user],
-            generation_config={"temperature": 0.0, "max_output_tokens": 4096}
+            generation_config={"temperature": 0.0, "max_output_tokens": 4096},
         )
         print(f"[📊 Gemini - brak szczegółów tokenów]")
         print(f"[💰 Gemini - sprawdź limity w Google AI Studio]")
         return response.text.strip()
-    
+
     # --- LM Studio ---
     elif ENGINE == "lmstudio":
         LMSTUDIO_API_KEY = os.getenv("LMSTUDIO_API_KEY", "local")
         LMSTUDIO_API_URL = os.getenv("LMSTUDIO_API_URL", "http://localhost:1234/v1")
-        MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_LM", "llama-3.3-70b-instruct")
-        
+        MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+            "MODEL_NAME_LM", "llama-3.3-70b-instruct"
+        )
+
         try:
             from openai import OpenAI
         except ImportError:
             print("❌ Musisz zainstalować openai: pip install openai", file=sys.stderr)
             sys.exit(1)
-            
+
         client = OpenAI(api_key=LMSTUDIO_API_KEY, base_url=LMSTUDIO_API_URL)
         resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": PROMPT_SYSTEM},
-                {"role": "user", "content": prompt_user}
+                {"role": "user", "content": prompt_user},
             ],
-            temperature=0
+            temperature=0,
         )
         # Liczenie tokenów
         tokens = resp.usage
-        print(f"[📊 Prompt: {tokens.prompt_tokens} | Completion: {tokens.completion_tokens} | Total: {tokens.total_tokens}]")
+        print(
+            f"[📊 Prompt: {tokens.prompt_tokens} | Completion: {tokens.completion_tokens} | Total: {tokens.total_tokens}]"
+        )
         print(f"[💰 Model lokalny - brak kosztów]")
         return resp.choices[0].message.content.strip()
-    
+
     # --- Anything LLM ---
     elif ENGINE == "anything":
         ANYTHING_API_KEY = os.getenv("ANYTHING_API_KEY", "local")
         ANYTHING_API_URL = os.getenv("ANYTHING_API_URL", "http://localhost:1234/v1")
-        MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_ANY", "llama-3.3-70b-instruct")
-        
+        MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+            "MODEL_NAME_ANY", "llama-3.3-70b-instruct"
+        )
+
         try:
             from openai import OpenAI
         except ImportError:
             print("❌ Musisz zainstalować openai: pip install openai", file=sys.stderr)
             sys.exit(1)
-            
+
         client = OpenAI(api_key=ANYTHING_API_KEY, base_url=ANYTHING_API_URL)
         resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": PROMPT_SYSTEM},
-                {"role": "user", "content": prompt_user}
+                {"role": "user", "content": prompt_user},
             ],
-            temperature=0
+            temperature=0,
         )
         # Liczenie tokenów
         tokens = resp.usage
-        print(f"[📊 Prompt: {tokens.prompt_tokens} | Completion: {tokens.completion_tokens} | Total: {tokens.total_tokens}]")
+        print(
+            f"[📊 Prompt: {tokens.prompt_tokens} | Completion: {tokens.completion_tokens} | Total: {tokens.total_tokens}]"
+        )
         print(f"[💰 Model lokalny - brak kosztów]")
         return resp.choices[0].message.content.strip()
     else:
         print(f"❌ Nieznany silnik: {ENGINE}", file=sys.stderr)
         sys.exit(1)
 
+
 def extract_flag(text: str) -> str:
     import re
+
     m = re.search(r"\{\{FLG:[^}]+\}\}|FLG\{[^}]+\}", text)
     return m.group(0) if m else ""
+
 
 def main():
     raw = download_text(CENZURA_URL)
     print(f"🔄 Pobrano tekst ({len(raw)} znaków)")
     print(f"🔄 Cenzuruję używając {ENGINE}...")
-    
+
     censored = censor_llm(raw)
     print("=== OCENZUROWANY OUTPUT ===")
     print(censored)
     print("===========================")
-    
-    payload = {
-        "task": "CENZURA",
-        "apikey": CENTRALA_API_KEY,
-        "answer": censored
-    }
+
+    payload = {"task": "CENZURA", "apikey": CENTRALA_API_KEY, "answer": censored}
     try:
         r = requests.post(REPORT_URL, json=payload, timeout=10)
         if r.ok:
@@ -282,6 +317,7 @@ def main():
     except Exception as e:
         print(f"❌ Błąd podczas wysyłania danych: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

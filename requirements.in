@@ -36,3 +36,4 @@ urllib3
 uvicorn
 whisper
 yt_dlp
+anthropic

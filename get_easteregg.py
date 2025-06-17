@@ -1,9 +1,10 @@
 ## Uwaga - easteregg działa tylko w sobotę.
-import requests
 import json
-import subprocess
 import os
+import subprocess
 import sys
+
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,16 +12,15 @@ CENTRAL_REPORT_URL = os.getenv("REPORT_URL")
 if not CENTRAL_REPORT_URL:
     raise RuntimeError("REPORT_URL nie ustawiony w .env")
 
+
 def fetch_and_save_headers():
-    headers = {
-        "User-Agent": "Mozilla/5.0 (EasterEggHunter 1.0)"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (EasterEggHunter 1.0)"}
     resp = requests.get(CENTRAL_REPORT_URL, headers=headers)
     data = {
         "status_code": resp.status_code,
         "url": resp.url,
         "headers": dict(resp.headers),
-        "body": resp.text
+        "body": resp.text,
     }
     with open("headers-httpx.json", "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
@@ -32,6 +32,7 @@ def fetch_and_save_headers():
     # Flaga w body?
     if "FLG:" in resp.text:
         print("🎯 FLAGA w odpowiedzi JSON:\n", resp.text)
+
 
 def choose_and_run_zadanie():
     # Szukaj plików zadN.py w bieżącym katalogu
@@ -51,12 +52,13 @@ def choose_and_run_zadanie():
                 print("Niepoprawny numer, spróbuj jeszcze raz.")
         except Exception:
             print("Niepoprawna wartość, spróbuj jeszcze raz.")
-    zadanie_file = files[choice-1]
+    zadanie_file = files[choice - 1]
     print(f"Uruchamiam {zadanie_file} ...")
     ret = subprocess.run([sys.executable, zadanie_file])
     if ret.returncode != 0:
         print(f"Błąd podczas wykonywania {zadanie_file}. Kod wyjścia: {ret.returncode}")
         sys.exit(1)
+
 
 def send_answer_json():
     # Wysyła plik answer.json jeśli istnieje
@@ -73,6 +75,7 @@ def send_answer_json():
     except Exception:
         print("Odpowiedź tekstowa:", resp.text)
 
+
 def main():
     print("[1/3] Pobieram nagłówki i zapisuję headers-httpx.json...")
     fetch_and_save_headers()
@@ -80,6 +83,7 @@ def main():
     choose_and_run_zadanie()
     print("[3/3] Wysyłam answer.json do centrali (jeśli istnieje)...")
     send_answer_json()
+
 
 if __name__ == "__main__":
     main()

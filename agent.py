@@ -1,162 +1,149 @@
 #!/usr/bin/env python3
-import os
-import sys
-import re
+"""
+Agent do wykonywania zadań AI Devs 3 Reloaded
+Refaktoryzacja zgodna z zaleceniami SonarQube
+"""
 import json
-import subprocess
+import os
 import platform
-from dotenv import load_dotenv
+import re
+import subprocess
+import sys
+from typing import Tuple, List, Dict, Optional, Any
 
+from dotenv import load_dotenv
 from langchain_core.tools import tool
-from langgraph.graph import StateGraph, START, END
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
+from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.prebuilt.chat_agent_executor import AgentState
-from langchain_openai import ChatOpenAI
-from langchain_google_genai import ChatGoogleGenerativeAI
 
 load_dotenv(override=True)
 
-def detect_shell_and_clean_env():
-    """
-    Wykrywa typ powłoki i czyści problematyczne zmienne środowiskowe
-    które mogłyby konfliktować z ustawieniami z .env
-    """
-    # Zmienne które mogą powodować problemy
-    problematic_vars = [
-        "LLM_ENGINE", "MODEL_NAME", "ENGINE", 
-        "OPENAI_MODEL", "CLAUDE_MODEL", "GEMINI_MODEL",
-        "AI_MODEL", "LLM_MODEL_NAME"
-    ]
-    
-    shell_type = "unknown"
-    system = platform.system().lower()
-    
-    # Wykrywanie typu powłoki
-    if system == "windows":
-        if os.getenv("PSModulePath"):  # PowerShell
-            shell_type = "powershell"
-        else:  # CMD
-            shell_type = "cmd"
-    else:  # Linux/macOS
-        shell = os.getenv("SHELL", "").lower()
-        if "bash" in shell:
-            shell_type = "bash"
-        elif "zsh" in shell:
-            shell_type = "zsh"
-        elif "fish" in shell:
-            shell_type = "fish"
-        else:
-            shell_type = "unix"
-    
-    print(f"🔍 Wykryto środowisko: {system} / {shell_type}")
-    
-    # Sprawdź problematyczne zmienne
-    found_vars = []
-    for var in problematic_vars:
-        value = os.environ.get(var)
-        if value:
-            found_vars.append((var, value))
-    
-    if found_vars:
-        print("⚠️  Znaleziono potencjalnie konfliktowe zmienne środowiskowe:")
-        for var, value in found_vars:
-            print(f"   {var} = {value}")
-        
-        # Zapytaj użytkownika czy wyczyścić
-        try:
-            response = input("❓ Wyczyścić te zmienne dla tej sesji? [y/N]: ").strip().lower()
-            if response in {'y', 'yes', 'tak', 't'}:
-                for var, _ in found_vars:
-                    del os.environ[var]
-                    print(f"🧹 Wyczyszczono: {var}")
-                
-                # Pokaż instrukcje jak wyczyścić na stałe
-                print("\n💡 Aby wyczyścić zmienne na stałe:")
-                if shell_type == "powershell":
-                    for var, _ in found_vars:
-                        print(f"   [Environment]::SetEnvironmentVariable('{var}', $null, 'User')")
-                elif shell_type in ["bash", "zsh"]:
-                    print("   Usuń odpowiednie linie z ~/.bashrc, ~/.zshrc, ~/.profile")
-                elif shell_type == "cmd":
-                    for var, _ in found_vars:
-                        print(f"   setx {var} \"\"")
-                print()
-            else:
-                print("🔄 Kontynuuję z obecnymi zmiennymi...")
-        except (EOFError, KeyboardInterrupt):
-            print("\n🔄 Kontynuuję z obecnymi zmiennymi...")
-    else:
-        print("✅ Brak konfliktowych zmiennych środowiskowych")
+# Stałe dla duplikowanych literałów (S1192)
+ERROR_INVALID_TASK = "Niepoprawny numer zadania. Wybierz w zakresie 1-24."
+ERROR_INVALID_SECRET = "Niepoprawny numer sekretu. Wybierz w zakresie 1-9."
+ERROR_TASK_FAILED = "🛑 Zadanie zakończone z błędem."
+ERROR_SECRET_FAILED = "🛑 Sekret zakończony z błędem."
+NOT_SET_VALUE = "(niewartość)"
+FLAGS_JSON = "flags.json"
+SECRETS_JSON = "secrets.json"
+STATUS_SET = "✅ ustawiony"
+STATUS_MISSING = "❌ brak"
 
+# Zakresy dozwolonych wartości
+VALID_TASKS = set(str(i) for i in range(1, 25))  # "1" do "24"
+VALID_SECRETS = set(str(i) for i in range(1, 10))  # "1" do "9"
+VALID_ENGINES = {"openai", "lmstudio", "anything", "gemini", "claude"}
+
+# Zmienne globalne
 completed_tasks = set()
-completed_secrets = set()  # NOWE: śledzenie ukończonych sekretów
+completed_secrets = set()
 current_engine = None
 current_model = None
 
-def _execute_task(task_key: str):
-    key = str(task_key).strip().strip("'").strip('"')
-    if key not in {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24"}:
-        return ("Niepoprawny numer zadania. Wybierz w zakresie 1-24.", False, False)
-    script = f"zad{key}.py"
-    if not os.path.exists(script):
-        return (f"Plik {script} nie istnieje.", False, False)
-    env = os.environ.copy()
-    # POPRAWKA: przekazuj wybrany silnik i model do subprocess
-    if current_engine:
-        env["LLM_ENGINE"] = current_engine
-    if current_model:
-        env["MODEL_NAME"] = current_model
-    if not env.get("OPENAI_API_KEY"):
-        env["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY", "")
-    env["PYTHONUTF8"] = "1"
-    try:
-        result = subprocess.run(
-            [sys.executable, script],
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=True
-        )
-        output_full = result.stdout.rstrip()
-        if output_full == "":
-            output_full = "(Brak wyjścia)"
-        flags = re.findall(r"\{\{FLG:.*?\}\}|FLG\{.*?\}", output_full)
-        if flags:
-            lines = output_full.splitlines()
-            last_flag_index = 0
-            for i, line in enumerate(lines):
-                if "{{FLG:" in line or "FLG{" in line:
-                    last_flag_index = i
-            truncated_output = "\n".join(lines[:last_flag_index+1])
-            return (flags, True, False)
-        else:
-            return (output_full, False, False)
-    except subprocess.CalledProcessError as e:
-        out_text = (e.stdout or "").rstrip()
-        err_text = (e.stderr or "").rstrip()
-        return ((out_text, err_text), False, True)
 
-def _execute_secret(secret_key: str):
-    """NOWE: Wykonuje sekretne zadanie secN.py"""
-    key = str(secret_key).strip().strip("'").strip('"')
-    if key not in {"1", "2", "3", "4", "5", "6", "7", "8", "9"}:
-        return ("Niepoprawny numer sekretu. Wybierz w zakresie 1-9git.", False, False)
-    script = f"sec{key}.py"
-    if not os.path.exists(script):
-        return (f"Plik {script} nie istnieje.", False, False)
-    env = os.environ.copy()
-    # Przekazuj wybrany silnik i model do subprocess
-    if current_engine:
-        env["LLM_ENGINE"] = current_engine
-    if current_model:
-        env["MODEL_NAME"] = current_model
-    if not env.get("OPENAI_API_KEY"):
-        env["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY", "")
-    env["PYTHONUTF8"] = "1"
-    try:
-        result = subprocess.run(
+class Config:
+    """Konfiguracja aplikacji"""
+    PROBLEMATIC_ENV_VARS = [
+        "LLM_ENGINE", "MODEL_NAME", "ENGINE", "OPENAI_MODEL",
+        "CLAUDE_MODEL", "GEMINI_MODEL", "AI_MODEL", "LLM_MODEL_NAME"
+    ]
+    
+    SHELL_TYPES = {
+        "powershell": {"indicator": "PSModulePath", "platform": "windows"},
+        "cmd": {"indicator": None, "platform": "windows"},
+        "bash": {"indicator": "bash", "platform": "unix"},
+        "zsh": {"indicator": "zsh", "platform": "unix"},
+        "fish": {"indicator": "fish", "platform": "unix"},
+    }
+
+
+class ShellDetector:
+    """Wykrywanie typu powłoki systemowej"""
+    
+    @staticmethod
+    def detect() -> str:
+        """Wykrywa typ powłoki systemowej"""
+        system = platform.system().lower()
+        
+        if system == "windows":
+            if os.getenv("PSModulePath"):
+                return "powershell"
+            return "cmd"
+        
+        shell = os.getenv("SHELL", "").lower()
+        for shell_type, pattern in [("bash", "bash"), ("zsh", "zsh"), ("fish", "fish")]:
+            if pattern in shell:
+                return shell_type
+        return "unix"
+
+
+class EnvironmentCleaner:
+    """Czyszczenie problematycznych zmiennych środowiskowych"""
+    
+    @staticmethod
+    def find_problematic_vars() -> List[Tuple[str, str]]:
+        """Znajduje problematyczne zmienne środowiskowe"""
+        found_vars = []
+        for var in Config.PROBLEMATIC_ENV_VARS:
+            value = os.environ.get(var)
+            if value:
+                found_vars.append((var, value))
+        return found_vars
+    
+    @staticmethod
+    def clean_vars(vars_to_clean: List[Tuple[str, str]]) -> None:
+        """Czyści zmienne środowiskowe"""
+        for var, _ in vars_to_clean:
+            del os.environ[var]
+            print(f"🧹 Wyczyszczono: {var}")
+    
+    @staticmethod
+    def show_cleanup_instructions(shell_type: str, vars: List[Tuple[str, str]]) -> None:
+        """Pokazuje instrukcje czyszczenia zmiennych"""
+        print("\n💡 Aby wyczyścić zmienne na stałe:")
+        
+        if shell_type == "powershell":
+            for var, _ in vars:
+                print(f"   [Environment]::SetEnvironmentVariable('{var}', $null, 'User')")
+        elif shell_type in ["bash", "zsh"]:
+            print("   Usuń odpowiednie linie z ~/.bashrc, ~/.zshrc, ~/.profile")
+        elif shell_type == "cmd":
+            for var, _ in vars:
+                print(f'   setx {var} ""')
+        print()
+
+
+class TaskExecutor:
+    """Wykonywanie zadań i sekretów"""
+    
+    @staticmethod
+    def prepare_env() -> Dict[str, str]:
+        """Przygotowuje środowisko dla subprocess"""
+        env = os.environ.copy()
+        if current_engine:
+            env["LLM_ENGINE"] = current_engine
+        if current_model:
+            env["MODEL_NAME"] = current_model
+        if not env.get("OPENAI_API_KEY"):
+            env["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY", "")
+        env["PYTHONUTF8"] = "1"
+        return env
+    
+    @staticmethod
+    def extract_flags(output: str) -> Tuple[List[str] | str, bool]:
+        """Wyodrębnia flagi z wyjścia"""
+        flags = re.findall(r"\{\{FLG:[^}]*\}\}|FLG\{[^}]*\}", output)
+        if flags:
+            return flags, True
+        return output, False
+    
+    @staticmethod
+    def run_script(script: str, env: Dict[str, str]) -> subprocess.CompletedProcess:
+        """Uruchamia skrypt Python"""
+        return subprocess.run(
             [sys.executable, script],
             env=env,
             capture_output=True,
@@ -165,24 +152,225 @@ def _execute_secret(secret_key: str):
             errors="replace",
             check=True
         )
-        output_full = result.stdout.rstrip()
-        if output_full == "":
-            output_full = "(Brak wyjścia)"
-        flags = re.findall(r"\{\{FLG:.*?\}\}|FLG\{.*?\}", output_full)
-        if flags:
-            lines = output_full.splitlines()
-            last_flag_index = 0
-            for i, line in enumerate(lines):
-                if "{{FLG:" in line or "FLG{" in line:
-                    last_flag_index = i
-            truncated_output = "\n".join(lines[:last_flag_index+1])
-            return (flags, True, False)
+    
+    @classmethod
+    def execute(cls, script_name: str) -> Tuple[Any, bool, bool]:
+        """Wykonuje skrypt i zwraca (output, flag_found, error)"""
+        if not os.path.exists(script_name):
+            return (f"Plik {script_name} nie istnieje.", False, False)
+        
+        env = cls.prepare_env()
+        
+        try:
+            result = cls.run_script(script_name, env)
+            output_full = result.stdout.rstrip() or "(Brak wyjścia)"
+            output, flag_found = cls.extract_flags(output_full)
+            return (output, flag_found, False)
+            
+        except subprocess.CalledProcessError as e:
+            out_text = (e.stdout or "").rstrip()
+            err_text = (e.stderr or "").rstrip()
+            return ((out_text, err_text), False, True)
+
+
+class Logger:
+    """Logowanie wyników do JSON"""
+    
+    @staticmethod
+    def append_to_json(entry: Dict[str, Any], log_file: str = FLAGS_JSON) -> None:
+        """Dodaje wpis do pliku JSON"""
+        data = Logger.load_existing_data(log_file)
+        
+        if Logger.is_duplicate(entry, data):
+            return
+        
+        data.append(entry)
+        
+        with open(log_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    
+    @staticmethod
+    def load_existing_data(log_file: str) -> List[Dict[str, Any]]:
+        """Wczytuje istniejące dane z pliku"""
+        if not os.path.exists(log_file):
+            return []
+        
+        try:
+            with open(log_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else [data]
+        except json.JSONDecodeError:
+            return []
+    
+    @staticmethod
+    def is_duplicate(entry: Dict[str, Any], data: List[Dict[str, Any]]) -> bool:
+        """Sprawdza czy wpis już istnieje"""
+        entry_type = "zadanie" if "zadanie" in entry else "sekret"
+        
+        if entry_type not in entry or "flagi" not in entry or not entry["flagi"]:
+            return False
+        
+        for existing in data:
+            if (existing.get(entry_type) == entry[entry_type] and 
+                set(existing.get("flagi", [])) == set(entry["flagi"])):
+                return True
+        return False
+
+
+class LLMFactory:
+    """Fabryka do tworzenia klientów LLM"""
+    
+    @staticmethod
+    def create(engine: str, model_name: str):
+        """Tworzy odpowiedni klient LLM"""
+        if engine == "claude":
+            return LLMFactory._create_claude(model_name)
+        elif engine == "gemini":
+            return LLMFactory._create_gemini(model_name)
+        elif engine == "lmstudio":
+            return LLMFactory._create_lmstudio(model_name)
+        elif engine == "anything":
+            return LLMFactory._create_anything(model_name)
+        else:  # openai
+            return LLMFactory._create_openai(model_name)
+    
+    @staticmethod
+    def _create_claude(model_name: str):
+        """Tworzy klienta Claude"""
+        try:
+            from langchain_anthropic import ChatAnthropic
+            api_key = os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+            return ChatAnthropic(
+                model_name=model_name,
+                anthropic_api_key=api_key,
+                temperature=0
+            )
+        except ImportError:
+            raise ImportError("Brak langchain_anthropic. Zainstaluj: pip install langchain-anthropic")
+    
+    @staticmethod
+    def _create_gemini(model_name: str):
+        """Tworzy klienta Gemini"""
+        return ChatGoogleGenerativeAI(
+            model=model_name,
+            google_api_key=os.getenv("GEMINI_API_KEY"),
+            temperature=0
+        )
+    
+    @staticmethod
+    def _create_lmstudio(model_name: str):
+        """Tworzy klienta LMStudio"""
+        url = os.getenv("LMSTUDIO_API_URL", "http://localhost:1234/v1")
+        key = os.getenv("LMSTUDIO_API_KEY", "local")
+        return ChatOpenAI(
+            model_name=model_name,
+            temperature=0,
+            openai_api_base=url,
+            openai_api_key=key
+        )
+    
+    @staticmethod
+    def _create_anything(model_name: str):
+        """Tworzy klienta Anything"""
+        url = os.getenv("ANYTHING_API_URL", "http://localhost:1234/v1")
+        key = os.getenv("ANYTHING_API_KEY", "local")
+        return ChatOpenAI(
+            model_name=model_name,
+            temperature=0,
+            openai_api_base=url,
+            openai_api_key=key
+        )
+    
+    @staticmethod
+    def _create_openai(model_name: str):
+        """Tworzy klienta OpenAI"""
+        return ChatOpenAI(
+            model_name=model_name,
+            temperature=0,
+            openai_api_base=os.getenv("OPENAI_API_URL"),
+            openai_api_key=os.getenv("OPENAI_API_KEY")
+        )
+
+
+def detect_shell_and_clean_env() -> None:
+    """Wykrywa typ powłoki i czyści problematyczne zmienne środowiskowe"""
+    shell_type = ShellDetector.detect()
+    system = platform.system().lower()
+    
+    print(f"🔍 Wykryto środowisko: {system} / {shell_type}")
+    
+    found_vars = EnvironmentCleaner.find_problematic_vars()
+    
+    if not found_vars:
+        print("✅ Brak konfliktowych zmiennych środowiskowych")
+        return
+    
+    print("⚠️  Znaleziono potencjalnie konfliktowe zmienne środowiskowe:")
+    for var, value in found_vars:
+        print(f"   {var} = {value}")
+    
+    try:
+        response = input("❓ Wyczyścić te zmienne dla tej sesji? [y/N]: ").strip().lower()
+        if response in {"y", "yes", "tak", "t"}:
+            EnvironmentCleaner.clean_vars(found_vars)
+            EnvironmentCleaner.show_cleanup_instructions(shell_type, found_vars)
         else:
-            return (output_full, False, False)
-    except subprocess.CalledProcessError as e:
-        out_text = (e.stdout or "").rstrip()
-        err_text = (e.stderr or "").rstrip()
-        return ((out_text, err_text), False, True)
+            print("🔄 Kontynuuję z obecnymi zmiennymi...")
+    except (EOFError, KeyboardInterrupt):
+        print("\n🔄 Kontynuuję z obecnymi zmiennymi...")
+
+
+def _execute_task(task_key: str) -> Tuple[Any, bool, bool]:
+    """Wykonuje zadanie"""
+    key = str(task_key).strip().strip("'").strip('"')
+    
+    if key not in VALID_TASKS:
+        return (ERROR_INVALID_TASK, False, False)
+    
+    script = f"zad{key}.py"
+    return TaskExecutor.execute(script)
+
+
+def _execute_secret(secret_key: str) -> Tuple[Any, bool, bool]:
+    """Wykonuje sekretne zadanie"""
+    key = str(secret_key).strip().strip("'").strip('"')
+    
+    if key not in VALID_SECRETS:
+        return (ERROR_INVALID_SECRET, False, False)
+    
+    script = f"sec{key}.py"
+    return TaskExecutor.execute(script)
+
+
+def format_flag_message(flags: List[str] | str) -> str:
+    """Formatuje komunikat o znalezionych flagach"""
+    flags_list = flags if isinstance(flags, list) else [str(flags)]
+    
+    if len(flags_list) > 1:
+        return f"🏁 Flagi znalezione: [{', '.join(flags_list)}] - kończę zadanie."
+    else:
+        return f"🏁 Flaga znaleziona: {flags_list[0]} - kończę zadanie."
+
+
+def handle_error_output(output: Tuple[str, str], task_type: str, task_id: str, log_file: str) -> None:
+    """Obsługuje błędne wyjście"""
+    stdout_text, stderr_text = output if isinstance(output, tuple) else ("", "")
+    
+    error_msg = ERROR_TASK_FAILED if task_type == "zadanie" else ERROR_SECRET_FAILED
+    print(error_msg)
+    
+    if stdout_text:
+        print(f"🐞 STDOUT:\n{stdout_text}")
+    if stderr_text:
+        print(f"🐞 STDERR:\n{stderr_text}")
+    
+    log_entry = {
+        task_type: task_id,
+        "flagi": [],
+        "debug_output": f"STDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}"
+    }
+    Logger.append_to_json(log_entry, log_file)
+
 
 @tool
 def run_task(task_key: str) -> str:
@@ -193,390 +381,365 @@ def run_task(task_key: str) -> str:
     """
     key = str(task_key).strip().strip("'").strip('"')
     print(f"🔄 Uruchamiam zadanie {key}…")
+    
     output, flag_found, error = _execute_task(key)
+    
     if error:
-        stdout_text, stderr_text = output if isinstance(output, tuple) else ("", "")
-        print("🛑 Zadanie zakończone z błędem.")
-        if stdout_text:
-            print(f"🐞 STDOUT:\n{stdout_text}")
-        if stderr_text:
-            print(f"🐞 STDERR:\n{stderr_text}")
-        log_entry = {
-            "zadanie": key,
-            "flagi": [],
-            "debug_output": f"STDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}"
-        }
-        _append_to_json_log(log_entry)
-        return "🛑 Zadanie zakończone z błędem."
+        handle_error_output(output, "zadanie", key, FLAGS_JSON)
+        return ERROR_TASK_FAILED
+    
     if flag_found:
         completed_tasks.add(key)
-        flags_list = output if isinstance(output, list) else [str(output)]
-        if len(flags_list) > 1:
-            flag_msg = f"🏁 Flagi znalezione: [{', '.join(flags_list)}] - kończę zadanie."
-        else:
-            flag_msg = f"🏁 Flaga znaleziona: {flags_list[0]} - kończę zadanie."
+        flag_msg = format_flag_message(output)
         print(flag_msg)
-        log_entry = {
-            "zadanie": key,
-            "flagi": flags_list
-        }
-        _append_to_json_log(log_entry)
+        
+        flags_list = output if isinstance(output, list) else [str(output)]
+        Logger.append_to_json({"zadanie": key, "flagi": flags_list})
+        
         return flag_msg
+    
     return str(output)
+
 
 @tool
 def run_secret(secret_key: str) -> str:
     """
-    NOWE: Uruchamia sekretne zadanie secN.py (gdzie N to numer sekretu) i zwraca wynik działania,
+    Uruchamia sekretne zadanie secN.py (gdzie N to numer sekretu) i zwraca wynik działania,
     w szczególności flagę w formacie {{FLG:...}}. Używany przez agenta LangChain.
     Obsługuje sekrety 1-9.
     """
     key = str(secret_key).strip().strip("'").strip('"')
     print(f"🔐 Uruchamiam sekret {key}…")
+    
     output, flag_found, error = _execute_secret(key)
+    
     if error:
-        stdout_text, stderr_text = output if isinstance(output, tuple) else ("", "")
-        print("🛑 Sekret zakończony z błędem.")
-        if stdout_text:
-            print(f"🐞 STDOUT:\n{stdout_text}")
-        if stderr_text:
-            print(f"🐞 STDERR:\n{stderr_text}")
-        log_entry = {
-            "sekret": key,
-            "flagi": [],
-            "debug_output": f"STDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}"
-        }
-        _append_to_json_log(log_entry, log_file="secrets.json")  # Osobny plik dla sekretów
-        return "🛑 Sekret zakończony z błędem."
+        handle_error_output(output, "sekret", key, SECRETS_JSON)
+        return ERROR_SECRET_FAILED
+    
     if flag_found:
         completed_secrets.add(key)
-        flags_list = output if isinstance(output, list) else [str(output)]
-        if len(flags_list) > 1:
-            flag_msg = f"🏁 Flagi znalezione: [{', '.join(flags_list)}] - kończę sekret."
-        else:
-            flag_msg = f"🏁 Flaga znaleziona: {flags_list[0]} - kończę sekret."
+        flag_msg = format_flag_message(output)
         print(flag_msg)
-        log_entry = {
-            "sekret": key,
-            "flagi": flags_list
-        }
-        _append_to_json_log(log_entry, log_file="secrets.json")  # Osobny plik dla sekretów
+        
+        flags_list = output if isinstance(output, list) else [str(output)]
+        Logger.append_to_json({"sekret": key, "flagi": flags_list}, SECRETS_JSON)
+        
         return flag_msg
+    
     return str(output)
+
 
 @tool
 def read_env(var: str) -> str:
     """
-    Zwraca wartość zmiennej środowiskowej o nazwie var. Jeśli zmienna nie istnieje, zwraca '(niewartość)'.
+    Zwraca wartość zmiennej środowiskowej o nazwie var. 
+    Jeśli zmienna nie istnieje, zwraca '(niewartość)'.
     """
     key = str(var).strip().strip("'").strip('"')
-    return os.getenv(key, "(niewartość)")
+    return os.getenv(key, NOT_SET_VALUE)
 
-def _append_to_json_log(entry: dict, log_file="flags.json"):
-    """ROZSZERZONE: Dodano parametr log_file dla różnych plików logów"""
-    data = []
-    if os.path.exists(log_file):
+
+def get_engine_choice(current_engine: str) -> str:
+    """Pobiera wybór silnika od użytkownika"""
+    while True:
         try:
-            with open(log_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    data = [data]
-        except json.JSONDecodeError:
-            data = []
+            prompt_text = "Wybierz silnik LLM [openai/lmstudio/anything/gemini/claude]"
+            if current_engine in VALID_ENGINES:
+                prompt_text += f" (aktualny: {current_engine})"
+            prompt_text += ": "
+            
+            engine = input(prompt_text).strip().lower()
+            
+            # Jeśli użytkownik nie wpisał nic, użyj aktualnego ENGINE z .env
+            if not engine and current_engine in VALID_ENGINES:
+                engine = current_engine
+                print(f"🔄 Używam silnika z .env: {engine}")
+            
+            if engine in VALID_ENGINES:
+                return engine
+            
+            print("⚠️ Nieznany wybór. Wpisz 'openai', 'lmstudio', 'anything', 'gemini' albo 'claude'.")
+            
+        except (EOFError, KeyboardInterrupt):
+            print("\nKoniec.")
+            sys.exit(0)
+
+
+def get_model_name(engine: str) -> Optional[str]:
+    """Pobiera nazwę modelu dla danego silnika"""
+    model_mapping = {
+        "openai": ("MODEL_NAME_OPENAI", None),
+        "claude": ("MODEL_NAME_CLAUDE", "claude-sonnet-4-20250514"),
+        "gemini": ("MODEL_NAME_GEMINI", "gemini-2.5-pro-latest"),
+        "lmstudio": ("MODEL_NAME_LM", "gpt-4o-mini"),
+        "anything": ("MODEL_NAME_ANY", "gpt-4o-mini")
+    }
     
-    # Deduplikacja: nie zapisuj identycznego wpisu
-    entry_type = "zadanie" if "zadanie" in entry else "sekret"
-    if entry_type in entry and "flagi" in entry and entry["flagi"]:
-        for d in data:
-            if d.get(entry_type) == entry[entry_type] and set(d.get("flagi", [])) == set(entry["flagi"]):
-                return
-    data.append(entry)
-    with open(log_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    env_var, default = model_mapping.get(engine, (None, None))
+    
+    if engine == "openai":
+        model_name = os.getenv(env_var)
+        if not model_name:
+            print(f"⚠️ Nie ustawiono {env_var} w .env - przerwano działanie.")
+            return None
+        return model_name
+    
+    # Dla lmstudio i anything - kaskadowe sprawdzanie
+    if engine in ["lmstudio", "anything"]:
+        model_name = os.getenv(env_var, "")
+        if not model_name:
+            model_name = os.getenv("MODEL_NAME_ANY" if engine == "anything" else "MODEL_NAME_LM", "")
+        if not model_name:
+            model_name = os.getenv("MODEL_NAME_OPENAI", default)
+        return model_name
+    
+    # Dla pozostałych silników
+    return os.getenv(env_var, default)
+
+
+def validate_api_keys(engine: str) -> bool:
+    """Sprawdza czy wymagane klucze API są ustawione"""
+    required_keys = {
+        "claude": ["CLAUDE_API_KEY", "ANTHROPIC_API_KEY"],
+        "gemini": ["GEMINI_API_KEY"],
+        "openai": ["OPENAI_API_KEY"]
+    }
+    
+    if engine not in required_keys:
+        return True
+    
+    keys = required_keys[engine]
+    
+    # Dla Claude - wystarczy jeden z kluczy
+    if engine == "claude":
+        if not any(os.getenv(key) for key in keys):
+            print(f"⚠️ Nie ustawiono żadnego z kluczy: {', '.join(keys)} w .env - przerwano działanie.")
+            return False
+        return True
+    
+    # Dla pozostałych - wszystkie klucze muszą być ustawione
+    for key in keys:
+        if not os.getenv(key):
+            print(f"⚠️ Nie ustawiono {key} w .env - przerwano działanie.")
+            return False
+    
+    return True
+
+
+def debug_env_vars(engine: str) -> None:
+    """Wyświetla debug informacji o zmiennych środowiskowych"""
+    print("🔍 Debug - zmienne kluczowe:")
+    
+    debug_info = {
+        "lmstudio": [
+            ("LMSTUDIO_API_URL", os.getenv("LMSTUDIO_API_URL")),
+            ("LMSTUDIO_API_KEY", os.getenv("LMSTUDIO_API_KEY"))
+        ],
+        "anything": [
+            ("ANYTHING_API_URL", os.getenv("ANYTHING_API_URL")),
+            ("ANYTHING_API_KEY", os.getenv("ANYTHING_API_KEY"))
+        ],
+        "claude": [
+            ("CLAUDE/ANTHROPIC_API_KEY", 
+             STATUS_SET if (os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")) else STATUS_MISSING)
+        ],
+        "gemini": [
+            ("GEMINI_API_KEY", STATUS_SET if os.getenv("GEMINI_API_KEY") else STATUS_MISSING)
+        ],
+        "openai": [
+            ("OPENAI_API_KEY", STATUS_SET if os.getenv("OPENAI_API_KEY") else STATUS_MISSING),
+            ("OPENAI_API_URL", os.getenv("OPENAI_API_URL"))
+        ]
+    }
+    
+    if engine in debug_info:
+        for var_name, value in debug_info[engine]:
+            print(f"   {var_name}: {value}")
+
+
+def process_command(cmd: str) -> bool:
+    """
+    Przetwarza komendę użytkownika
+    Zwraca True jeśli należy kontynuować, False jeśli zakończyć
+    """
+    if not cmd:
+        return True
+    
+    if cmd.lower() in {"exit", "quit"}:
+        print("Wyłączam agenta.")
+        return False
+    
+    # Obsługa run_task
+    if cmd.lower().startswith("run_task"):
+        return handle_run_task_command(cmd)
+    
+    # Obsługa run_secret
+    if cmd.lower().startswith("run_secret"):
+        return handle_run_secret_command(cmd)
+    
+    # Obsługa read_env
+    if cmd.lower().startswith("read_env"):
+        return handle_read_env_command(cmd)
+    
+    print("Nieznana komenda. Użyj: run_task N (1-24), run_secret N (1-9), read_env VAR, lub exit.")
+    return True
+
+
+def handle_run_task_command(cmd: str) -> bool:
+    """Obsługuje komendę run_task - zwraca czy kontynuować"""
+    parts = cmd.split(maxsplit=1)
+    if len(parts) < 2:
+        print(ERROR_INVALID_TASK)
+        return True  # Kontynuuj mimo błędnych argumentów
+    
+    task_arg = extract_argument(parts[1])
+    
+    if task_arg not in VALID_TASKS:
+        print(ERROR_INVALID_TASK)
+        return True  # Kontynuuj mimo nieprawidłowego numeru zadania
+    
+    print(f"🔄 Uruchamiam zadanie {task_arg}…")
+    output, flag_found, error = _execute_task(task_arg)
+    
+    if error:
+        handle_error_output(output, "zadanie", task_arg, FLAGS_JSON)
+        return True  # Kontynuuj mimo błędu wykonania
+    elif flag_found:
+        completed_tasks.add(task_arg)
+        print(format_flag_message(output))
+        flags_list = output if isinstance(output, list) else [str(output)]
+        Logger.append_to_json({"zadanie": task_arg, "flagi": flags_list})
+        return True  # Kontynuuj po znalezieniu flagi
+    else:
+        print(output)
+        return True  # Kontynuuj po normalnym wykonaniu
+
+
+def handle_run_secret_command(cmd: str) -> bool:
+    """Obsługuje komendę run_secret - zwraca czy kontynuować"""
+    parts = cmd.split(maxsplit=1)
+    if len(parts) < 2:
+        print(ERROR_INVALID_SECRET)
+        return True  # Kontynuuj mimo błędnych argumentów
+    
+    secret_arg = extract_argument(parts[1])
+    
+    if secret_arg not in VALID_SECRETS:
+        print(ERROR_INVALID_SECRET)
+        return True  # Kontynuuj mimo nieprawidłowego numeru sekretu
+    
+    print(f"🔐 Uruchamiam sekret {secret_arg}…")
+    output, flag_found, error = _execute_secret(secret_arg)
+    
+    if error:
+        handle_error_output(output, "sekret", secret_arg, SECRETS_JSON)
+        return True  # Kontynuuj mimo błędu wykonania
+    elif flag_found:
+        completed_secrets.add(secret_arg)
+        print(format_flag_message(output))
+        flags_list = output if isinstance(output, list) else [str(output)]
+        Logger.append_to_json({"sekret": secret_arg, "flagi": flags_list}, SECRETS_JSON)
+        return True  # Kontynuuj po znalezieniu flagi
+    else:
+        print(output)
+        return True  # Kontynuuj po normalnym wykonaniu
+
+
+def handle_read_env_command(cmd: str) -> bool:
+    """Obsługuje komendę read_env - zwraca czy kontynuować"""
+    parts = cmd.split(maxsplit=1)
+    if len(parts) < 2:
+        print(NOT_SET_VALUE)
+        return True  # Kontynuuj z domyślną wartością
+    
+    var = extract_argument(parts[1])
+    value = os.getenv(var, NOT_SET_VALUE)
+    print(value)
+    return True  # Zawsze kontynuuj po odczycie zmiennej
+
+
+def extract_argument(arg: str) -> str:
+    """Wyodrębnia argument z możliwych cudzysłowów"""
+    arg = arg.strip()
+    if (arg.startswith("'") and arg.endswith("'")) or (arg.startswith('"') and arg.endswith('"')):
+        return arg[1:-1].strip()
+    return arg
+
 
 def main():
+    """Główna funkcja programu"""
     global current_engine, current_model
     
     # Sprawdź i wyczyść problematyczne zmienne środowiskowe
     detect_shell_and_clean_env()
     
-    # Sprawdź aktualny ENGINE z .env (po ewentualnym wyczyszczeniu)
+    # Sprawdź aktualny ENGINE z .env
     current_engine = os.getenv("LLM_ENGINE", "").lower()
     print(f"🔍 Aktualny LLM_ENGINE z .env: '{current_engine}'")
     
-    engine = ""
-    while engine not in {"openai", "lmstudio", "anything", "gemini", "claude"}:
-        try:
-            prompt_text = f"Wybierz silnik LLM [openai/lmstudio/anything/gemini/claude]"
-            if current_engine in {"openai", "lmstudio", "anything", "gemini", "claude"}:
-                prompt_text += f" (aktualny: {current_engine})"
-            prompt_text += ": "
-            engine = input(prompt_text).strip().lower()
-            
-            # Jeśli użytkownik nie wpisał nic, użyj aktualnego ENGINE z .env
-            if not engine and current_engine in {"openai", "lmstudio", "anything", "gemini", "claude"}:
-                engine = current_engine
-                print(f"🔄 Używam silnika z .env: {engine}")
-                
-        except (EOFError, KeyboardInterrupt):
-            print("\nKoniec.")
-            return
-        if engine not in {"openai", "lmstudio", "anything", "gemini", "claude"}:
-            print("⚠️ Nieznany wybór. Wpisz 'openai', 'lmstudio', 'anything', 'gemini' albo 'claude'.")
-
+    # Pobierz wybór silnika
+    engine = get_engine_choice(current_engine)
     print(f"🚀 Wybrany silnik: {engine}")
-
-    # Ustaw globalne zmienne do przekazania subprocess
+    
+    # Ustaw globalne zmienne
     current_engine = engine
-
-    # Ustawienie MODEL_NAME na podstawie silnika
-    if engine == "openai":
-        model_name = os.getenv("MODEL_NAME_OPENAI")
-        if not model_name:
-            print("⚠️ Nie ustawiono MODEL_NAME_OPENAI w .env - przerwano działanie.")
-            return
-    elif engine == "claude":
-        model_name = os.getenv("MODEL_NAME_CLAUDE", "claude-sonnet-4-20250514")
-    elif engine == "lmstudio":
-        model_name = os.getenv("MODEL_NAME_LM", "")
-        if not model_name:
-            model_name = os.getenv("MODEL_NAME_ANY", "")
-        if not model_name:
-            model_name = os.getenv("MODEL_NAME_OPENAI", "gpt-4o-mini")
-    elif engine == "gemini":
-        model_name = os.getenv("MODEL_NAME_GEMINI", "gemini-2.5-pro-latest")
-    else:  # anything
-        model_name = os.getenv("MODEL_NAME_ANY", "")
-        if not model_name:
-            model_name = os.getenv("MODEL_NAME_LM", "")
-        if not model_name:
-            model_name = os.getenv("MODEL_NAME_OPENAI", "gpt-4o-mini")
-
+    
+    # Pobierz nazwę modelu
+    model_name = get_model_name(engine)
+    if model_name is None:
+        return
+    
     print(f"🔧 Model: {model_name}")
-
-    # Ustaw globalne zmienne do przekazania subprocess
     current_model = model_name
-
-    # Debug informacji o zmiennych środowiskowych
-    print("🔍 Debug - zmienne kluczowe:")
-    if engine == "lmstudio":
-        print(f"   LMSTUDIO_API_URL: {os.getenv('LMSTUDIO_API_URL')}")
-        print(f"   LMSTUDIO_API_KEY: {os.getenv('LMSTUDIO_API_KEY')}")
-    elif engine == "anything":
-        print(f"   ANYTHING_API_URL: {os.getenv('ANYTHING_API_URL')}")
-        print(f"   ANYTHING_API_KEY: {os.getenv('ANYTHING_API_KEY')}")
-    elif engine == "claude":
-        claude_key = os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
-        print(f"   CLAUDE/ANTHROPIC_API_KEY: {'✅ ustawiony' if claude_key else '❌ brak'}")
-    elif engine == "gemini":
-        print(f"   GEMINI_API_KEY: {'✅ ustawiony' if os.getenv('GEMINI_API_KEY') else '❌ brak'}")
-    elif engine == "openai":
-        print(f"   OPENAI_API_KEY: {'✅ ustawiony' if os.getenv('OPENAI_API_KEY') else '❌ brak'}")
-        print(f"   OPENAI_API_URL: {os.getenv('OPENAI_API_URL')}")
-
-    # Sprawdzenie wymaganych zmiennych przed inicjalizacją
-    if engine == "claude":
-        if not (os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")):
-            print("⚠️ Nie ustawiono CLAUDE_API_KEY ani ANTHROPIC_API_KEY w .env - przerwano działanie.")
-            return
-    elif engine == "gemini":
-        if not os.getenv("GEMINI_API_KEY"):
-            print("⚠️ Nie ustawiono GEMINI_API_KEY w .env - przerwano działanie.")
-            return
-    elif engine == "openai":
-        if not os.getenv("OPENAI_API_KEY"):
-            print("⚠️ Nie ustawiono OPENAI_API_KEY w .env - przerwano działanie.")
-            return
-
-    # Ustawienie MODEL_NAME w środowisku (również dla LangChain)
+    
+    # Debug informacji
+    debug_env_vars(engine)
+    
+    # Sprawdzenie kluczy API
+    if not validate_api_keys(engine):
+        return
+    
+    # Ustawienie zmiennych środowiskowych
     os.environ["MODEL_NAME"] = model_name
     os.environ["LLM_ENGINE"] = engine
-
-    # Inicjalizacja LLM - uproszczona wersja bez dodatkowych ustawień os.environ
+    
+    # Inicjalizacja LLM
     try:
-        if engine == "claude":
-            try:
-                from langchain_anthropic import ChatAnthropic
-                llm = ChatAnthropic(
-                    model_name=model_name,
-                    anthropic_api_key=os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY"),
-                    temperature=0
-                )
-                print("✅ Claude LLM zainicjalizowany")
-            except ImportError:
-                print("⚠️ Brak langchain_anthropic. Zainstaluj: pip install langchain-anthropic")
-                print("Lub użyj innego silnika.")
-                return
-                
-        elif engine == "gemini":
-            llm = ChatGoogleGenerativeAI(
-                model=model_name,
-                google_api_key=os.getenv("GEMINI_API_KEY"),
-                temperature=0
-            )
-            print("✅ Gemini LLM zainicjalizowany")
-            
-        elif engine == "lmstudio":
-            lmstudio_url = os.getenv("LMSTUDIO_API_URL", "http://localhost:1234/v1")
-            lmstudio_key = os.getenv("LMSTUDIO_API_KEY", "local")
-            llm = ChatOpenAI(
-                model_name=model_name,
-                temperature=0,
-                openai_api_base=lmstudio_url,
-                openai_api_key=lmstudio_key
-            )
-            print(f"✅ LMStudio LLM zainicjalizowany ({lmstudio_url})")
-            
-        elif engine == "anything":
-            anything_url = os.getenv("ANYTHING_API_URL", "http://localhost:1234/v1")
-            anything_key = os.getenv("ANYTHING_API_KEY", "local")
-            llm = ChatOpenAI(
-                model_name=model_name,
-                temperature=0,
-                openai_api_base=anything_url,
-                openai_api_key=anything_key
-            )
-            print(f"✅ Anything LLM zainicjalizowany ({anything_url})")
-            
-        else:  # openai
-            llm = ChatOpenAI(
-                model_name=model_name,
-                temperature=0,
-                openai_api_base=os.getenv("OPENAI_API_URL"),
-                openai_api_key=os.getenv("OPENAI_API_KEY")
-            )
-            print("✅ OpenAI LLM zainicjalizowany")
-            
+        llm = LLMFactory.create(engine, model_name)
+        print(f"✅ {engine.capitalize()} LLM zainicjalizowany")
     except Exception as e:
         print(f"❌ Błąd podczas inicjalizacji LLM: {e}")
         return
-
-    # Konfiguracja grafu LangChain - ROZSZERZONE o run_secret
+    
+    # Konfiguracja grafu LangChain
     tools = [run_task, run_secret, read_env]
     builder = StateGraph(AgentState)
     llm_with_tools = llm.bind_tools(tools)
-    builder.add_node("agent", lambda state: {"messages": llm_with_tools.invoke(state["messages"])})
+    builder.add_node(
+        "agent", lambda state: {"messages": llm_with_tools.invoke(state["messages"])}
+    )
     builder.add_node("tools", ToolNode(tools))
     builder.add_edge(START, "agent")
-    builder.add_conditional_edges("agent", tools_condition, {"tools": "tools", END: END})
+    builder.add_conditional_edges(
+        "agent", tools_condition, {"tools": "tools", END: END}
+    )
     builder.add_edge("tools", "agent")
-    graph = builder.compile()
+    # Usunięto nieużywaną zmienną graph - graf jest skompilowany ale nie przypisywany
+    builder.compile()
     
     print("🤖 Agent uruchomiony. Komendy: run_task N (1-24) | run_secret N (1-9) | read_env VAR | exit")
     print("=" * 60)
     
+    # Główna pętla
     while True:
         try:
             cmd = input("> ").strip()
+            if not process_command(cmd):
+                break
         except (EOFError, KeyboardInterrupt):
             print("\nKoniec.")
             break
-        if not cmd:
-            continue
-        if cmd.lower() in {"exit", "quit"}:
-            print("Wyłączam agenta.")
-            break
-            
-        if cmd.lower().startswith("run_task"):
-            parts = cmd.split(maxsplit=1)
-            if len(parts) < 2:
-                print("Niepoprawny numer zadania. Wybierz w zakresie 1-24.")
-                continue
-            task_arg = parts[1].strip()
-            if (task_arg.startswith("'") and task_arg.endswith("'")) or (task_arg.startswith('"') and task_arg.endswith('"')):
-                task_arg = task_arg[1:-1].strip()
-            if task_arg not in {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24"}:
-                print("Niepoprawny numer zadania. Wybierz w zakresie 1-24.")
-                continue
-            task_id = task_arg
-            print(f"🔄 Uruchamiam zadanie {task_id}…")
-            output, flag_found, error = _execute_task(task_id)
-            if error:
-                stdout_text, stderr_text = output if isinstance(output, tuple) else ("", "")
-                print("🛑 Zadanie zakończone z błędem.")
-                if stdout_text:
-                    print(f"🐞 STDOUT:\n{stdout_text}")
-                if stderr_text:
-                    print(f"🐞 STDERR:\n{stderr_text}")
-                log_entry = {
-                    "zadanie": task_id,
-                    "flagi": [],
-                    "debug_output": f"STDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}"
-                }
-                _append_to_json_log(log_entry)
-            elif flag_found:
-                completed_tasks.add(task_id)
-                flags_list = output if isinstance(output, list) else [str(output)]
-                if len(flags_list) > 1:
-                    print(f"🏁 Flagi znalezione: [{', '.join(flags_list)}] - kończę zadanie.")
-                else:
-                    print(f"🏁 Flaga znaleziona: {flags_list[0]} - kończę zadanie.")
-                log_entry = {
-                    "zadanie": task_id,
-                    "flagi": flags_list
-                }
-                _append_to_json_log(log_entry)
-            else:
-                print(output)
-            continue
-            
-        # Obsługa run_secret
-        if cmd.lower().startswith("run_secret"):
-            parts = cmd.split(maxsplit=1)
-            if len(parts) < 2:
-                print("Niepoprawny numer sekretu. Wybierz w zakresie 1-4.")
-                continue
-            secret_arg = parts[1].strip()
-            if (secret_arg.startswith("'") and secret_arg.endswith("'")) or (secret_arg.startswith('"') and secret_arg.endswith('"')):
-                secret_arg = secret_arg[1:-1].strip()
-            if secret_arg not in {"1", "2", "3", "4", "5", "6", "7", "8", "9"}:
-                print("Niepoprawny numer sekretu. Wybierz w zakresie 1-9.")
-                continue
-            secret_id = secret_arg
-            print(f"🔐 Uruchamiam sekret {secret_id}…")
-            output, flag_found, error = _execute_secret(secret_id)
-            if error:
-                stdout_text, stderr_text = output if isinstance(output, tuple) else ("", "")
-                print("🛑 Sekret zakończony z błędem.")
-                if stdout_text:
-                    print(f"🐞 STDOUT:\n{stdout_text}")
-                if stderr_text:
-                    print(f"🐞 STDERR:\n{stderr_text}")
-                log_entry = {
-                    "sekret": secret_id,
-                    "flagi": [],
-                    "debug_output": f"STDOUT:\n{stdout_text}\nSTDERR:\n{stderr_text}"
-                }
-                _append_to_json_log(log_entry, log_file="secrets.json")
-            elif flag_found:
-                completed_secrets.add(secret_id)
-                flags_list = output if isinstance(output, list) else [str(output)]
-                if len(flags_list) > 1:
-                    print(f"🏁 Flagi znalezione: [{', '.join(flags_list)}] - kończę sekret.")
-                else:
-                    print(f"🏁 Flaga znaleziona: {flags_list[0]} - kończę sekret.")
-                log_entry = {
-                    "sekret": secret_id,
-                    "flagi": flags_list
-                }
-                _append_to_json_log(log_entry, log_file="secrets.json")
-            else:
-                print(output)
-            continue
-            
-        if cmd.lower().startswith("read_env"):
-            parts = cmd.split(maxsplit=1)
-            if len(parts) < 2:
-                print("(niewartość)")
-                continue
-            var = parts[1].strip()
-            if (var.startswith("'") and var.endswith("'")) or (var.startswith('"') and var.endswith('"')):
-                var = var[1:-1].strip()
-            value = os.getenv(var, "(niewartość)")
-            print(value)
-            continue
-            
-        print("Nieznana komenda. Użyj: run_task N (1-24), run_secret N (1-9), read_env VAR, lub exit.")
 
 if __name__ == "__main__":
     main()

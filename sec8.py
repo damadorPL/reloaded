@@ -3,12 +3,14 @@
 Rozwiązuje zadanie GPS – zamienia współrzędne z pliku na flagę.
 """
 import os
+
 import requests
 from dotenv import load_dotenv
 
+
 def main():
     load_dotenv(override=True)
-    gps_url = os.getenv("REPORT_URL").replace('/report', '/gps')
+    gps_url = os.getenv("REPORT_URL").replace("/report", "/gps")
 
     # 1. Pobierz zagadkę dla userID 443
     resp = requests.post(gps_url, json={"userID": 443})
@@ -34,6 +36,7 @@ def main():
 
     # 4. Wypisz flagę (wyłapywaną przez agent.py)
     print(flag)
+
 
 if __name__ == "__main__":
     main()

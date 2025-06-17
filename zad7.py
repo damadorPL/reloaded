@@ -15,15 +15,16 @@ Wymagane zmienne środowiskowe (w .env):
 - REPORT_URL, CENTRALA_API_KEY, LOCAL_SD_API_URL
 """
 import argparse
-import os
-import sys
-import re
-import requests
-import json
-import uuid
 import glob
-import time
+import json
+import os
 import platform
+import re
+import sys
+import time
+import uuid
+
+import requests
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -62,7 +63,11 @@ def generate_with_comfyui(prompt, workflow_path, local_sd_api_url, output_dir):
             prompt_node_id = node_id
             break
     if not prompt_node_id:
-        prompt_node_id = [k for k, v in workflow_api.items() if v.get("class_type") == "CLIPTextEncode"][0]
+        prompt_node_id = [
+            k
+            for k, v in workflow_api.items()
+            if v.get("class_type") == "CLIPTextEncode"
+        ][0]
     workflow_api[prompt_node_id]["inputs"]["text"] = prompt
     # Ustaw filename_prefix dla SaveImage
     for node in workflow_api.values():
@@ -100,7 +105,9 @@ def generate_with_comfyui(prompt, workflow_path, local_sd_api_url, output_dir):
         print(f"Znaleziono plik: {found}")
         return found
 
-    print("❌ Nie udało się znaleźć wygenerowanego obrazka po 3 minutach", file=sys.stderr)
+    print(
+        "❌ Nie udało się znaleźć wygenerowanego obrazka po 3 minutach", file=sys.stderr
+    )
     sys.exit(1)
 
 
@@ -108,18 +115,32 @@ def check_comfyui_api(url):
     try:
         requests.get(url, timeout=5)
     except Exception:
-        print("❌ Brak działającego backendu ComfyUI. Zainstaluj ComfyUI z https://www.comfy.org/download", file=sys.stderr)
+        print(
+            "❌ Brak działającego backendu ComfyUI. Zainstaluj ComfyUI z https://www.comfy.org/download",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generowanie obrazu robota (openai/lmstudio/anything/gemini/claude/comfyui)")
-    parser.add_argument("--engine", choices=["openai", "lmstudio", "anything", "gemini", "claude", "comfyui"],
-                        help="Backend LLM do użycia")
-    parser.add_argument("--workflow", default="robot.json",
-                        help="Ścieżka do pliku workflow ComfyUI (API format)")
-    parser.add_argument("--output-dir", default=None,
-                        help="Katalog output ComfyUI (domyślnie wykrywany)")
+    parser = argparse.ArgumentParser(
+        description="Generowanie obrazu robota (openai/lmstudio/anything/gemini/claude/comfyui)"
+    )
+    parser.add_argument(
+        "--engine",
+        choices=["openai", "lmstudio", "anything", "gemini", "claude", "comfyui"],
+        help="Backend LLM do użycia",
+    )
+    parser.add_argument(
+        "--workflow",
+        default="robot.json",
+        help="Ścieżka do pliku workflow ComfyUI (API format)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Katalog output ComfyUI (domyślnie wykrywany)",
+    )
     args = parser.parse_args()
 
     # POPRAWKA: Lepsze wykrywanie silnika (jak w poprawionych zad1.py-zad6.py)
@@ -155,7 +176,10 @@ def main():
     # Sprawdzenie czy wybrany silnik obsługuje generowanie obrazów
     if ENGINE in {"claude", "gemini"}:
         print(f"❌ {ENGINE} nie obsługuje generowania obrazów.", file=sys.stderr)
-        print("💡 Użyj --engine openai (DALL-E) lub comfyui (lokalne) dla generowania obrazów.", file=sys.stderr)
+        print(
+            "💡 Użyj --engine openai (DALL-E) lub comfyui (lokalne) dla generowania obrazów.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     WORKFLOW = args.workflow
@@ -177,10 +201,14 @@ def main():
     REPORT_URL = os.getenv("REPORT_URL", "")
     CENTRALA_API_KEY = os.getenv("CENTRALA_API_KEY", "")
     LOCAL_SD_API_URL = os.getenv("LOCAL_SD_API_URL", "http://localhost:8074")
-    MODEL_NAME_IMAGE = os.getenv("MODEL_NAME_IMAGE", "dall-e-3")  # Używaj dedykowanej zmiennej do obrazów
+    MODEL_NAME_IMAGE = os.getenv(
+        "MODEL_NAME_IMAGE", "dall-e-3"
+    )  # Używaj dedykowanej zmiennej do obrazów
 
     if not CENTRALA_API_KEY or not REPORT_URL:
-        print("❌ Brak ustawienia CENTRALA_API_KEY lub REPORT_URL w .env", file=sys.stderr)
+        print(
+            "❌ Brak ustawienia CENTRALA_API_KEY lub REPORT_URL w .env", file=sys.stderr
+        )
         sys.exit(1)
 
     # Sprawdzenie wymaganych API keys/zasobów
@@ -197,7 +225,7 @@ def main():
     if ROBOT_URL is None:
         print("❌ Brak ROBOT_URL w .env", file=sys.stderr)
         sys.exit(1)
-        
+
     print(banner("Opis robota (dynamiczny)"))
     try:
         resp = requests.get(ROBOT_URL, timeout=10)
@@ -205,7 +233,10 @@ def main():
         data = resp.json()
         description = data.get("description", "").strip()
     except Exception as e:
-        print(f"❌ Błąd pobierania lub parsowania JSON z {ROBOT_URL}: {e}", file=sys.stderr)
+        print(
+            f"❌ Błąd pobierania lub parsowania JSON z {ROBOT_URL}: {e}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if not description:
         print("❌ Brak pola 'description' w odpowiedzi.", file=sys.stderr)
@@ -227,10 +258,7 @@ def main():
         print(f"[DEBUG] Używam modelu: {MODEL_NAME_IMAGE}")
         try:
             resp_img = img_client.images.generate(
-                model=MODEL_NAME_IMAGE,
-                prompt=prompt,
-                n=1,
-                size="1024x1024"
+                model=MODEL_NAME_IMAGE, prompt=prompt, n=1, size="1024x1024"
             )
             image_url = resp_img.data[0].url
             print(f"[📊 DALL-E - brak szczegółów tokenów]")
@@ -242,7 +270,9 @@ def main():
         print(banner("Generowanie obrazu (ComfyUI API)"))
         print(f"[DEBUG] Workflow: {WORKFLOW}")
         print(f"[DEBUG] Output dir: {OUTPUT_DIR}")
-        image_url = generate_with_comfyui(prompt, WORKFLOW, LOCAL_SD_API_URL, OUTPUT_DIR)
+        image_url = generate_with_comfyui(
+            prompt, WORKFLOW, LOCAL_SD_API_URL, OUTPUT_DIR
+        )
         print(f"[📊 ComfyUI - model lokalny]")
         print(f"[💰 ComfyUI - brak kosztów]")
     elif ENGINE == "claude":
@@ -253,11 +283,17 @@ def main():
         print("1. Użyj OpenAI (DALL-E): ustaw LLM_ENGINE=openai w .env")
         print("2. Użyj ComfyUI (local): ustaw LLM_ENGINE=comfyui w .env")
         print("3. Uruchom ponownie agent.py i wybierz inny silnik")
-        print("\nClaude świetnie sprawdza się w zadaniach tekstowych i analizy obrazów (vision),")
+        print(
+            "\nClaude świetnie sprawdza się w zadaniach tekstowych i analizy obrazów (vision),"
+        )
         print("ale nie może tworzyć nowych obrazów.")
         sys.exit(2)
     elif ENGINE == "gemini":
-        print(banner("❌ Gemini (Google Generative AI) nie obsługuje generowania obrazów!"))
+        print(
+            banner(
+                "❌ Gemini (Google Generative AI) nie obsługuje generowania obrazów!"
+            )
+        )
         print("Gemini w obecnej wersji nie obsługuje generowania obrazów.")
         print("Użyj OpenAI (DALL-E) lub ComfyUI (local)")
         sys.exit(2)

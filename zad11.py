@@ -8,22 +8,24 @@ Przykładowa konfiguracja .env:
 # ...
 """
 import warnings
+
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 import argparse
-import os
-import sys
-import zipfile
-import requests
 import json
+import os
 import re
+import sys
 import uuid
+import zipfile
 from pathlib import Path
+from typing import Any, Optional, TypedDict
+
+import requests
 from dotenv import load_dotenv
+from langgraph.graph import END, START, StateGraph
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
-from langgraph.graph import StateGraph, START, END
-from typing import TypedDict, Optional, Any
 
 # Wyłącz ostrzeżenia o embedding
 embedding_warning_emitted = False
@@ -31,9 +33,14 @@ embedding_warning_emitted = False
 # 1. Konfiguracja i wykrywanie silnika
 load_dotenv(override=True)
 
-parser = argparse.ArgumentParser(description="Wektorowe wyszukiwanie raportów (multi-engine)")
-parser.add_argument("--engine", choices=["openai", "lmstudio", "anything", "gemini", "claude"],
-                    help="LLM backend to use")
+parser = argparse.ArgumentParser(
+    description="Wektorowe wyszukiwanie raportów (multi-engine)"
+)
+parser.add_argument(
+    "--engine",
+    choices=["openai", "lmstudio", "anything", "gemini", "claude"],
+    help="LLM backend to use",
+)
 args = parser.parse_args()
 
 ENGINE: Optional[str] = None
@@ -72,26 +79,41 @@ CENTRALA_API_KEY: str = os.getenv("CENTRALA_API_KEY")
 WEAPONS_PASSWORD: str = os.getenv("WEAPONS_PASSWORD")
 
 if not all([FABRYKA_URL, REPORT_URL, CENTRALA_API_KEY]):
-    print("❌ Brak wymaganych zmiennych: FABRYKA_URL, REPORT_URL, CENTRALA_API_KEY", file=sys.stderr)
+    print(
+        "❌ Brak wymaganych zmiennych: FABRYKA_URL, REPORT_URL, CENTRALA_API_KEY",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 if ENGINE == "openai":
-    MODEL_NAME: str = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_OPENAI", "gpt-4o-mini")
+    MODEL_NAME: str = os.getenv("MODEL_NAME") or os.getenv(
+        "MODEL_NAME_OPENAI", "gpt-4o-mini"
+    )
 elif ENGINE == "claude":
-    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_CLAUDE", "claude-sonnet-4-20250514")
+    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+        "MODEL_NAME_CLAUDE", "claude-sonnet-4-20250514"
+    )
 elif ENGINE == "gemini":
-    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_GEMINI", "gemini-2.5-pro-latest")
+    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+        "MODEL_NAME_GEMINI", "gemini-2.5-pro-latest"
+    )
 elif ENGINE == "lmstudio":
-    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_LM", "llama-3.3-70b-instruct")
+    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+        "MODEL_NAME_LM", "llama-3.3-70b-instruct"
+    )
 elif ENGINE == "anything":
-    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_ANY", "llama-3.3-70b-instruct")
+    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+        "MODEL_NAME_ANY", "llama-3.3-70b-instruct"
+    )
 
 print(f"✅ Model: {MODEL_NAME}")
 
 if ENGINE == "openai" and not os.getenv("OPENAI_API_KEY"):
     print("❌ Brak OPENAI_API_KEY", file=sys.stderr)
     sys.exit(1)
-elif ENGINE == "claude" and not (os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")):
+elif ENGINE == "claude" and not (
+    os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+):
     print("❌ Brak CLAUDE_API_KEY lub ANTHROPIC_API_KEY", file=sys.stderr)
     sys.exit(1)
 elif ENGINE == "gemini" and not os.getenv("GEMINI_API_KEY"):
@@ -103,27 +125,33 @@ if ENGINE == "openai":
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL_OPENAI", "text-embedding-ada-002")
     VECTOR_SIZE: int = 1536
 elif ENGINE == "lmstudio":
-    EMBEDDING_MODEL: str = os.getenv("LMSTUDIO_MODEL_EMBED", "text-embedding-nomic-embed-text-v1.5")
+    EMBEDDING_MODEL: str = os.getenv(
+        "LMSTUDIO_MODEL_EMBED", "text-embedding-nomic-embed-text-v1.5"
+    )
     VECTOR_SIZE: int = 768
 elif ENGINE == "anything":
-    EMBEDDING_MODEL: str = os.getenv("ANYTHING_MODEL_EMBED", "text-embedding-nomic-embed-text-v1.5")
+    EMBEDDING_MODEL: str = os.getenv(
+        "ANYTHING_MODEL_EMBED", "text-embedding-nomic-embed-text-v1.5"
+    )
     VECTOR_SIZE: int = 768
 else:
     EMBEDDING_MODEL: str = ""
     VECTOR_SIZE: int = 1536
 
-import requests
 import os
+
+import requests
+
 
 def get_embedding(text: str) -> Optional[list[float]]:
     global embedding_warning_emitted
     if ENGINE == "openai":
         from openai import OpenAI
+
         openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         try:
             response = openai_client.embeddings.create(
-                model=EMBEDDING_MODEL,
-                input=text
+                model=EMBEDDING_MODEL, input=text
             )
             return response.data[0].embedding
         except Exception as e:
@@ -140,10 +168,7 @@ def get_embedding(text: str) -> Optional[list[float]]:
             api_key = os.getenv("LMSTUDIO_API_KEY", "local")
             if api_key:
                 headers["Authorization"] = f"Bearer {api_key}"
-            data = {
-                "model": model_name,
-                "input": text
-            }
+            data = {"model": model_name, "input": text}
             response = requests.post(url, json=data, headers=headers, timeout=30)
             response.raise_for_status()
             emb = response.json()
@@ -153,7 +178,9 @@ def get_embedding(text: str) -> Optional[list[float]]:
             return None
     else:
         if not embedding_warning_emitted:
-            print("⚠️  Wybrany silnik nie obsługuje embeddingów (albo nie zaimplementowano obsługi). Użyj OpenAI lub LM Studio.")
+            print(
+                "⚠️  Wybrany silnik nie obsługuje embeddingów (albo nie zaimplementowano obsługi). Użyj OpenAI lub LM Studio."
+            )
             embedding_warning_emitted = True
         return None
 
@@ -168,10 +195,7 @@ if QDRANT_HOST == ":memory:":
     qdrant_client = QdrantClient(":memory:")
     print("📊 Używam Qdrant w pamięci (dane nie będą zapisane)")
 elif QDRANT_API_KEY:
-    qdrant_client = QdrantClient(
-        url=os.getenv("QDRANT_URL"),
-        api_key=QDRANT_API_KEY
-    )
+    qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL"), api_key=QDRANT_API_KEY)
     print(f"☁️  Połączono z Qdrant Cloud")
 else:
     qdrant_client = QdrantClient(QDRANT_HOST, port=QDRANT_PORT)
@@ -193,16 +217,20 @@ try:
     collections = qdrant_client.get_collections()
     collection_names = [c.name for c in collections.collections]
     if COLLECTION_NAME in collection_names:
-        print(f"⚠️  Usuwam istniejącą kolekcję Qdrant '{COLLECTION_NAME}' (konflikt wymiarów embeddingu)...")
+        print(
+            f"⚠️  Usuwam istniejącą kolekcję Qdrant '{COLLECTION_NAME}' (konflikt wymiarów embeddingu)..."
+        )
         qdrant_client.delete_collection(COLLECTION_NAME)
         print(f"✅ Kolekcja '{COLLECTION_NAME}' została usunięta.")
 except Exception as e:
     print(f"❌ Błąd podczas usuwania kolekcji '{COLLECTION_NAME}': {e}")
 
+
 # 4. Typowanie stanu pipeline
 class PipelineState(TypedDict, total=False):
     weapons_dir: Path
     result: str
+
 
 # 5. Funkcje pomocnicze z typowaniem
 def download_and_extract(dest: Path) -> Path:
@@ -240,12 +268,14 @@ def download_and_extract(dest: Path) -> Path:
     print("✅ Pliki rozpakowane")
     return weapons_dir
 
+
 def extract_date_from_filename(filename: str) -> Optional[str]:
     """Ekstraktuje datę z nazwy pliku (np. 2024_02_21.txt -> 2024-02-21)"""
     date_match = re.search(r"(\d{4})[_-](\d{2})[_-](\d{2})", filename)
     if date_match:
         return f"{date_match.group(1)}-{date_match.group(2)}-{date_match.group(3)}"
     return None
+
 
 def create_collection() -> None:
     """Tworzy kolekcję w Qdrant"""
@@ -257,11 +287,11 @@ def create_collection() -> None:
     qdrant_client.create_collection(
         collection_name=COLLECTION_NAME,
         vectors_config=models.VectorParams(
-            size=VECTOR_SIZE,
-            distance=models.Distance.COSINE
-        )
+            size=VECTOR_SIZE, distance=models.Distance.COSINE
+        ),
     )
     print(f"✅ Utworzono kolekcję '{COLLECTION_NAME}' w Qdrant")
+
 
 def index_reports(weapons_dir: Path) -> None:
     """Indeksuje raporty w Qdrant"""
@@ -286,24 +316,24 @@ def index_reports(weapons_dir: Path) -> None:
             payload={
                 "date": date,
                 "filename": file_path.name,
-                "content_preview": content[:200]
-            }
+                "content_preview": content[:200],
+            },
         )
         points.append(point)
         print(f"   ✅ Zaindeksowano: {file_path.name} (data: {date})")
 
     if points:
-        qdrant_client.upsert(
-            collection_name=COLLECTION_NAME,
-            points=points
-        )
+        qdrant_client.upsert(collection_name=COLLECTION_NAME, points=points)
         print(f"✅ Zaindeksowano {len(points)} raportów")
     else:
         print("❌ Brak raportów do zaindeksowania")
 
+
 def search_theft_report() -> Optional[str]:
     """Wyszukuje raport ze wzmianką o kradzieży prototypu broni"""
-    query: str = "W raporcie, z którego dnia znajduje się wzmianka o kradzieży prototypu broni?"
+    query: str = (
+        "W raporcie, z którego dnia znajduje się wzmianka o kradzieży prototypu broni?"
+    )
 
     print(f"🔎 Szukam: {query}")
 
@@ -317,7 +347,7 @@ def search_theft_report() -> Optional[str]:
         collection_name=COLLECTION_NAME,
         query_vector=query_embedding,
         limit=1,
-        with_payload=True
+        with_payload=True,
     )
 
     if results:
@@ -334,6 +364,7 @@ def search_theft_report() -> Optional[str]:
         print("❌ Nie znaleziono raportu")
         return None
 
+
 # 6. Pipeline LangGraph
 def download_node(state: PipelineState) -> PipelineState:
     """Node do pobierania i rozpakowywania archiwów"""
@@ -341,11 +372,13 @@ def download_node(state: PipelineState) -> PipelineState:
     state["weapons_dir"] = weapons_dir
     return state
 
+
 def index_node(state: PipelineState) -> PipelineState:
     """Node do indeksowania raportów"""
     create_collection()
     index_reports(state["weapons_dir"])
     return state
+
 
 def search_node(state: PipelineState) -> PipelineState:
     """Node do wyszukiwania raportu"""
@@ -353,17 +386,14 @@ def search_node(state: PipelineState) -> PipelineState:
     state["result"] = date
     return state
 
+
 def send_node(state: PipelineState) -> PipelineState:
     """Node do wysyłania odpowiedzi"""
     if not state.get("result"):
         print("❌ Brak wyniku do wysłania")
         return state
 
-    payload = {
-        "task": "wektory",
-        "apikey": CENTRALA_API_KEY,
-        "answer": state["result"]
-    }
+    payload = {"task": "wektory", "apikey": CENTRALA_API_KEY, "answer": state["result"]}
 
     print(f"\n📤 Wysyłam odpowiedź: {payload['answer']}")
 
@@ -375,6 +405,7 @@ def send_node(state: PipelineState) -> PipelineState:
         print(f"❌ Błąd wysyłania: {e}")
 
     return state
+
 
 def build_graph() -> Any:
     """Buduje graf LangGraph"""
@@ -391,6 +422,7 @@ def build_graph() -> Any:
     graph.add_edge("send", END)
 
     return graph.compile()
+
 
 def main() -> None:
     print("=== Zadanie 12: Wektorowe wyszukiwanie raportów ===")
@@ -418,6 +450,7 @@ def main() -> None:
     except Exception as e:
         print(f"❌ Błąd: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

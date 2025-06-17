@@ -5,20 +5,25 @@ S05E03 - Ultra-szybki skrypt realizujący zadanie Rafała
 Multi-engine: openai, lmstudio, anything, gemini, claude
 """
 import argparse
+import asyncio
+import json
 import os
 import time
-import json
-import asyncio
+from pathlib import Path
+
 import aiohttp
 import requests
 from dotenv import load_dotenv
-from pathlib import Path
 
 # === KONFIGURACJA SILNIKA (skopiowane z innych zadań) ===
 load_dotenv(override=True)
 
 parser = argparse.ArgumentParser(description="Zadanie Rafała (multi-engine)")
-parser.add_argument("--engine", choices=["openai", "lmstudio", "anything", "gemini", "claude"], help="LLM backend do użycia")
+parser.add_argument(
+    "--engine",
+    choices=["openai", "lmstudio", "anything", "gemini", "claude"],
+    help="LLM backend do użycia",
+)
 args = parser.parse_args()
 
 ENGINE = None
@@ -51,57 +56,82 @@ print(f"🔄 ENGINE wykryty: {ENGINE}")
 
 # Konfiguracja modelu
 if ENGINE == "openai":
-    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_OPENAI", "gpt-4o")  # Szybki model!
+    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+        "MODEL_NAME_OPENAI", "gpt-4o"
+    )  # Szybki model!
 elif ENGINE == "claude":
-    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_CLAUDE", "claude-sonnet-4-20250514")
+    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+        "MODEL_NAME_CLAUDE", "claude-sonnet-4-20250514"
+    )
 elif ENGINE == "gemini":
-    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_GEMINI", "gemini-2.5-pro-latest")
+    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+        "MODEL_NAME_GEMINI", "gemini-2.5-pro-latest"
+    )
 elif ENGINE == "lmstudio":
-    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_LM", "qwen2.5-3b-instruct")  # SZYBKI!
+    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+        "MODEL_NAME_LM", "qwen2.5-3b-instruct"
+    )  # SZYBKI!
 elif ENGINE == "anything":
-    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_ANY", "qwen2.5-3b-instruct")  # SZYBKI!
+    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+        "MODEL_NAME_ANY", "qwen2.5-3b-instruct"
+    )  # SZYBKI!
 
 print(f"✅ Model: {MODEL_NAME}")
+
 
 # === UNIWERSALNA FUNKCJA LLM (skopiowane z innych zadań) ===
 def call_llm(prompt: str, temperature: float = 0) -> str:
     """Uniwersalna funkcja wywołania LLM - zoptymalizowana na szybkość"""
-    
+
     if ENGINE == "openai":
         from openai import OpenAI
+
         client = OpenAI(
-            api_key=os.getenv('OPENAI_API_KEY'),
-            base_url=os.getenv('OPENAI_API_URL') or None
+            api_key=os.getenv("OPENAI_API_KEY"),
+            base_url=os.getenv("OPENAI_API_URL") or None,
         )
         resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
-            max_tokens=100  # Bardzo mało tokenów = szybciej!
+            max_tokens=100,  # Bardzo mało tokenów = szybciej!
         )
         return resp.choices[0].message.content.strip()
-    
+
     elif ENGINE == "claude":
         try:
             from anthropic import Anthropic
         except ImportError:
             print("❌ Musisz zainstalować anthropic: pip install anthropic")
             exit(1)
-        
-        client = Anthropic(api_key=os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY"))
+
+        client = Anthropic(
+            api_key=os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+        )
         resp = client.messages.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
-            max_tokens=100
+            max_tokens=100,
         )
         return resp.content[0].text.strip()
-    
+
     elif ENGINE in {"lmstudio", "anything"}:
-        base_url = os.getenv("LMSTUDIO_API_URL", "http://localhost:1234/v1") if ENGINE == "lmstudio" else os.getenv("ANYTHING_API_URL", "http://localhost:1234/v1")
-        api_key = os.getenv("LMSTUDIO_API_KEY", "local") if ENGINE == "lmstudio" else os.getenv("ANYTHING_API_KEY", "local")
-        
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+        base_url = (
+            os.getenv("LMSTUDIO_API_URL", "http://localhost:1234/v1")
+            if ENGINE == "lmstudio"
+            else os.getenv("ANYTHING_API_URL", "http://localhost:1234/v1")
+        )
+        api_key = (
+            os.getenv("LMSTUDIO_API_KEY", "local")
+            if ENGINE == "lmstudio"
+            else os.getenv("ANYTHING_API_KEY", "local")
+        )
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
         payload = {
             "model": MODEL_NAME,
             "messages": [{"role": "user", "content": prompt}],
@@ -110,34 +140,38 @@ def call_llm(prompt: str, temperature: float = 0) -> str:
             "stream": False,
             "top_p": 0.9,
             "frequency_penalty": 0,
-            "presence_penalty": 0
+            "presence_penalty": 0,
         }
-        resp = requests.post(f"{base_url.rstrip('/')}/chat/completions", 
-                            json=payload, 
-                            headers=headers, 
-                            timeout=5)  # Max 2s na odpowiedź!
+        resp = requests.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=5,
+        )  # Max 2s na odpowiedź!
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"].strip()
-    
+
     elif ENGINE == "gemini":
         import google.generativeai as genai
+
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         model = genai.GenerativeModel(MODEL_NAME)
         response = model.generate_content(
             [prompt],
-            generation_config={"temperature": temperature, "max_output_tokens": 100}
+            generation_config={"temperature": temperature, "max_output_tokens": 100},
         )
         return response.text.strip()
 
+
 # === RESZTA KODU (bez zmian) ===
-RAFAL_URL = os.getenv('RAFAL_URL')
-CENTRALA_API_KEY = os.getenv('CENTRALA_API_KEY')
+RAFAL_URL = os.getenv("RAFAL_URL")
+CENTRALA_API_KEY = os.getenv("CENTRALA_API_KEY")
 TIMEOUT = aiohttp.ClientTimeout(total=5)
 
 # Słownik z WSZYSTKIMI możliwymi odpowiedziami - zero AI, zero pobierania!
 HARDCODED_ANSWERS = {
     "jak nazywa się najstarszy hymn polski": "Bogurodzica",
-    "najstarszy hymn polski": "Bogurodzica", 
+    "najstarszy hymn polski": "Bogurodzica",
     "bogurodzica": "Bogurodzica",
     "kiedy podpisano konstytucję 3 maja": "3 maja 1791",
     "konstytucja 3 maja": "3 maja 1791",
@@ -152,7 +186,7 @@ HARDCODED_ANSWERS = {
     "mikołaj kopernik": "Toruń",
     "kopernik": "Toruń",
     "kto jest autorem zbrodni i kary": "Fiodor Dostojewski",
-    "autor zbrodni i kary": "Fiodor Dostojewski", 
+    "autor zbrodni i kary": "Fiodor Dostojewski",
     "zbrodnia i kara": "Fiodor Dostojewski",
     "zbrodni i kary": "Fiodor Dostojewski",
     "data bitwy pod grunwaldem": "15 lipca 1410",
@@ -162,11 +196,13 @@ HARDCODED_ANSWERS = {
     "ile bitów danych przesłano": "128",
     "bitów danych przesłano": "128",
     "przesłano w ramach eksperymentu": "128",
-    "eksperymentu": "128"
+    "eksperymentu": "128",
 }
 
+
 def extract_message(resp_json: dict) -> dict:
-    return resp_json.get('message', {})
+    return resp_json.get("message", {})
+
 
 async def fetch_json(session: aiohttp.ClientSession, url: str) -> dict:
     try:
@@ -176,6 +212,7 @@ async def fetch_json(session: aiohttp.ClientSession, url: str) -> dict:
     except Exception as e:
         print(f"❌ Błąd pobierania {url}: {e}")
         return {"data": []}
+
 
 async def analyze_arxiv_document(html_content: str) -> dict:
     """Ultra-szybka analiza dokumentu arxiv przez wybrany LLM"""
@@ -194,40 +231,51 @@ HTML (fragment):
 
         result_text = call_llm(prompt, temperature=0)
         print(f"🤖 LLM ({ENGINE}) odpowiedź: {result_text}")
-        
+
         # Parsuj JSON z odpowiedzi
         try:
             result = json.loads(result_text)
             # Popraw odpowiedzi jeśli LLM nie znalazł
-            if "nie podano" in str(result.get('bits', '')).lower():
-                result['bits'] = '128'
+            if "nie podano" in str(result.get("bits", "")).lower():
+                result["bits"] = "128"
             return result
         except:
             # Fallback gdyby JSON był zepsuty - POPRAWNE wartości z artykułu
-            return {"bnw01": "BNW-01 to model AGI o nazwie Brave New World", "bits": "128"}
-            
+            return {
+                "bnw01": "BNW-01 to model AGI o nazwie Brave New World",
+                "bits": "128",
+            }
+
     except Exception as e:
         print(f"❌ Błąd analizy LLM: {e}")
         return {"bnw01": "BNW-01 to model AGI o nazwie Brave New World", "bits": "128"}
 
+
 def get_fast_answer(question: str, knowledge: dict = None):
     """Ultra szybka odpowiedź - zahardkodowane + dane z dokumentu"""
     q = question.lower().strip()
-    q = q.replace('?', '').replace('.', '').replace(',', '').replace('"', '').replace("'", '')
-    
+    q = (
+        q.replace("?", "")
+        .replace(".", "")
+        .replace(",", "")
+        .replace('"', "")
+        .replace("'", "")
+    )
+
     # Najpierw sprawdź dane z dokumentu (najważniejsze!)
     if knowledge:
-        if 'bnw' in q and 'rozwiń' in q:
-            return knowledge.get('bnw01', 'Blok Nawigacyjny Wojskowy-01')
-        elif 'bit' in q and ('przesłano' in q or 'eksperyment' in q):
-            return knowledge.get('bits', '256')
-    
+        if "bnw" in q and "rozwiń" in q:
+            return knowledge.get("bnw01", "Blok Nawigacyjny Wojskowy-01")
+        elif "bit" in q and ("przesłano" in q or "eksperyment" in q):
+            return knowledge.get("bits", "256")
+
     # Potem zahardkodowane odpowiedzi
     for key, answer in HARDCODED_ANSWERS.items():
         if key in q:
             return answer
-    
+
     return "Nie wiem"
+
 
 async def fetch_and_analyze_knowledge(url: str) -> dict:
     """Pobiera i analizuje źródło wiedzy równolegle"""
@@ -237,13 +285,14 @@ async def fetch_and_analyze_knowledge(url: str) -> dict:
                 resp.raise_for_status()
                 html_content = await resp.text()
                 print(f"📖 Pobrano dokument ({len(html_content)} znaków)")
-                
+
                 # Analizuj przez wybrany LLM
                 return await analyze_arxiv_document(html_content)
-                
+
     except Exception as e:
         print(f"❌ Błąd pobierania {url}: {e}")
         return {"bnw01": "BNW-01 to model AGI o nazwie Brave New World", "bits": "128"}
+
 
 async def main():
     start = time.time()
@@ -269,11 +318,11 @@ async def main():
             r2.raise_for_status()
             challenge_data = await r2.json()
             info = extract_message(challenge_data)
-        
-        ts = info.get('timestamp')
-        sig = info.get('signature') 
-        urls = info.get('challenges', [])
-        
+
+        ts = info.get("timestamp")
+        sig = info.get("signature")
+        urls = info.get("challenges", [])
+
         if not (ts and sig and urls):
             print("❌ Błędne dane od serwera")
             return
@@ -283,35 +332,37 @@ async def main():
         print(f"⏱️  {time.time() - start:.2f}s - Pobrano token i challenges")
 
         # 3. Pobierz zadania + źródło wiedzy RÓWNOLEGLE (kluczowa optymalizacja!)
-        arxiv_url = os.getenv('ARXIV_URL')
+        arxiv_url = os.getenv("ARXIV_URL")
         async with aiohttp.ClientSession(timeout=TIMEOUT) as sess:
             # Uruchom wszystko równolegle
             fetch_tasks = [fetch_json(sess, u) for u in urls]
             knowledge_task = fetch_and_analyze_knowledge(arxiv_url)
-            
+
             # Czekaj na wszystko naraz
             results = await asyncio.gather(*fetch_tasks, knowledge_task)
             challenges = results[:-1]  # Wszystko oprócz ostatniego
             knowledge_data = results[-1]  # Ostatni element to dane z arxiv
 
-        print(f"⏱️  {time.time() - start:.2f}s - Pobrano dane + przeanalizowano dokument")
+        print(
+            f"⏱️  {time.time() - start:.2f}s - Pobrano dane + przeanalizowano dokument"
+        )
         print(f"📖 Dane z dokumentu: {knowledge_data}")
         print(f"Challenges: {challenges}")
 
         # 4. Przygotuj odpowiedzi używając analizy dokumentu
         answers = {}
         question_counter = 1
-        
+
         for ch in challenges:
             print(f"📄 Przetwarzam challenge: {ch}")
-            
+
             # Przetwórz pytania
             questions_to_process = []
-            if 'data' in ch and isinstance(ch['data'], list):
-                questions_to_process = ch['data']
-            elif 'task' in ch:
-                questions_to_process = [ch['task']]
-            
+            if "data" in ch and isinstance(ch["data"], list):
+                questions_to_process = ch["data"]
+            elif "task" in ch:
+                questions_to_process = [ch["task"]]
+
             for question in questions_to_process:
                 if isinstance(question, str) and question.strip():
                     key = f"{question_counter:02d}"
@@ -325,27 +376,31 @@ async def main():
 
         # 5. Wysyłka
         payload = {
-            'apikey': CENTRALA_API_KEY,
-            'timestamp': ts,
-            'signature': sig,
-            'answer': answers
+            "apikey": CENTRALA_API_KEY,
+            "timestamp": ts,
+            "signature": sig,
+            "answer": answers,
         }
-        
+
         print(f"📤 Wysyłam payload: {payload}")
-        
+
         async with aiohttp.ClientSession(timeout=TIMEOUT) as sess:
             rf = await sess.post(RAFAL_URL, json=payload)
             rf.raise_for_status()
             result = await rf.json()
             print(f"🎉 Odpowiedź serwera: {result}")
-        
+
         total_time = time.time() - start
-        print(f"⚡ Całkowity czas: {total_time:.2f}s {'✅ SUKCES!' if total_time < 6 else '❌ ZA WOLNO!'}")
+        print(
+            f"⚡ Całkowity czas: {total_time:.2f}s {'✅ SUKCES!' if total_time < 6 else '❌ ZA WOLNO!'}"
+        )
 
     except Exception as e:
         print(f"💥 Błąd: {e}")
         import traceback
+
         traceback.print_exc()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     asyncio.run(main())

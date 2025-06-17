@@ -2,8 +2,9 @@
 """
 SEC6 - Znalezienie flagi z portfolio
 """
-import os
 import hashlib
+import os
+
 import requests
 from dotenv import load_dotenv
 
@@ -17,13 +18,16 @@ portfolio_urls = [
     for n in range(1, 7)
 ]
 
+
 def extract_flag(text):
     """
     Zwraca FLG w formacie {{FLG:...}} lub FLG{...} albo None
     """
     import re
-    match = re.search(r'(\{\{FLG:[^}]+\}\}|FLG\{[^}]+\})', text)
+
+    match = re.search(r"(\{\{FLG:[^}]+\}\}|FLG\{[^}]+\})", text)
     return match.group(1) if match else None
+
 
 def main():
     for url in portfolio_urls:
@@ -37,6 +41,7 @@ def main():
         except Exception:
             continue
     print("Brak flagi.")
+
 
 if __name__ == "__main__":
     main()

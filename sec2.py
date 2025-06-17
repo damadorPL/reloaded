@@ -7,26 +7,28 @@ Tryby:
   - datacenters: analizuje stan datacenter (z poprzedniego zadania)
 """
 import argparse
+import logging
 import os
 import sys
-import logging
-import requests
 from typing import Any, Dict, List, Optional
+
+import requests
 from dotenv import load_dotenv
 
 # -- Konfiguracja -----------------------------------
 load_dotenv(override=True)
 
-parser = argparse.ArgumentParser(
-    description="Wyszukiwanie flagi"
+parser = argparse.ArgumentParser(description="Wyszukiwanie flagi")
+parser.add_argument(
+    "--engine",
+    choices=["openai", "lmstudio", "anything", "gemini", "claude"],
+    help="LLM backend to use",
 )
 parser.add_argument(
-    "--engine", choices=["openai", "lmstudio", "anything", "gemini", "claude"],
-    help="LLM backend to use"
-)
-parser.add_argument(
-    "--mode", choices=["flag", "datacenters"], default="flag",
-    help="Tryb działania: 'flag' (domyślnie) lub 'datacenters'"
+    "--mode",
+    choices=["flag", "datacenters"],
+    default="flag",
+    help="Tryb działania: 'flag' (domyślnie) lub 'datacenters'",
 )
 args = parser.parse_args()
 
@@ -44,6 +46,7 @@ if not API_KEY:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+
 # -- Wysyłanie zapytań do API ----------------------
 def make_request(query: str) -> Optional[Any]:
     payload = {"task": "database", "apikey": API_KEY, "query": query}
@@ -57,13 +60,16 @@ def make_request(query: str) -> Optional[Any]:
         logger.error(f"❌ Błąd zapytania: {e}")
     return None
 
+
 # -- Funkcje dla trybu 'flag' -----------------------
 def retrieve_tables() -> List[str]:
     result = make_request("SHOW TABLES") or []
     return [item.get("Tables_in_banan") for item in result]
 
+
 def fetch_rows(table: str) -> List[Dict[str, Any]]:
     return make_request(f"SELECT * FROM {table}") or []
+
 
 def reconstruct_flag(rows: List[Dict[str, Any]]) -> Optional[str]:
     try:
@@ -95,24 +101,27 @@ def find_flag():
         logger.warning("⚠️ Nie znaleziono flagi")
         return
     # Usun ewentualna koncowa '}'
-    content = raw_flag.rstrip('}')
+    content = raw_flag.rstrip("}")
     # Print w formacie akceptowanym przez agent.py
     print(f"🏁 Flaga znaleziona: {{{{{content}}}}} - kończę zadanie.")
+
 
 # -- Funkcje dla trybu 'datacenters' ----------------
 def analyze_datacenters():
     logger.info("🔧 Analiza nieaktywnych datacenter")
     try:
         from zad13 import build_graph
+
         graph = build_graph()
         graph.invoke({})
         print("✅ Analiza datacenter zakończona")
     except ImportError:
         logger.error("Nie można zaimportować funkcji build_graph z zad13.py")
 
+
 # -- Punkt wejścia -------------------------------
 if __name__ == "__main__":
     if args.mode == "datacenters":
         analyze_datacenters()
     else:
-        find_flag()  
+        find_flag()

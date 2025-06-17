@@ -43,3 +43,14 @@ rafal_notebook.pdf
 headers-httpx.json
 cross.png
 na_smartfona_stretched_horizontal.png
+
+
+#SonarQube
+.scannerwork/
+.sonarlint/
+sonar-project.properties
+sonar_issues.json
+all_issues.json
+
+# VS Code
+.vscode/

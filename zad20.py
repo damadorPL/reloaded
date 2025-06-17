@@ -7,33 +7,43 @@ ENHANCED: Ultra-prosty, skupiony na kluczowych danych z wysokiej jakości prompt
 IMPROVED: Enhanced Gemini liar detection prompt
 """
 import argparse
-import os
-import sys
 import json
-import requests
 import logging
-import zipfile
-from pathlib import Path
-from dotenv import load_dotenv
-from typing import TypedDict, Optional, List, Dict, Any, Set, Tuple
-from langgraph.graph import StateGraph, START, END
+import os
 import re
+import sys
+import zipfile
 from collections import defaultdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple, TypedDict
+
+import requests
+from dotenv import load_dotenv
+from langgraph.graph import END, START, StateGraph
 
 # Konfiguracja loggera
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 # 1. Konfiguracja i wykrywanie silnika
 load_dotenv(override=True)
 
-parser = argparse.ArgumentParser(description="Analiza transkrypcji rozmów (multi-engine) - ENHANCED SIMPLE")
-parser.add_argument("--engine", choices=["openai", "lmstudio", "anything", "gemini", "claude"],
-                    help="LLM backend to use")
-parser.add_argument("--debug", action="store_true",
-                    help="Enable debug output for conversation analysis")
-parser.add_argument("--skip-downloads", action="store_true",
-                    help="Pomiń pobieranie plików fabryki")
+parser = argparse.ArgumentParser(
+    description="Analiza transkrypcji rozmów (multi-engine) - ENHANCED SIMPLE"
+)
+parser.add_argument(
+    "--engine",
+    choices=["openai", "lmstudio", "anything", "gemini", "claude"],
+    help="LLM backend to use",
+)
+parser.add_argument(
+    "--debug", action="store_true", help="Enable debug output for conversation analysis"
+)
+parser.add_argument(
+    "--skip-downloads", action="store_true", help="Pomiń pobieranie plików fabryki"
+)
 args = parser.parse_args()
 
 ENGINE: Optional[str] = None
@@ -76,22 +86,36 @@ CENTRALA_API_KEY: str = os.getenv("CENTRALA_API_KEY")
 FABRYKA_URL: str = os.getenv("FABRYKA_URL")
 
 if not all([PHONE_URL, PHONE_QUESTIONS, REPORT_URL, CENTRALA_API_KEY]):
-    print("❌ Brak wymaganych zmiennych: PHONE_URL, PHONE_QUESTIONS, REPORT_URL, CENTRALA_API_KEY", file=sys.stderr)
+    print(
+        "❌ Brak wymaganych zmiennych: PHONE_URL, PHONE_QUESTIONS, REPORT_URL, CENTRALA_API_KEY",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 # Model configuration
 if ENGINE == "openai":
-    MODEL_NAME: str = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_OPENAI", "gpt-4o")
+    MODEL_NAME: str = os.getenv("MODEL_NAME") or os.getenv(
+        "MODEL_NAME_OPENAI", "gpt-4o"
+    )
 elif ENGINE == "claude":
-    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_CLAUDE", "claude-3-5-sonnet-20241022")
+    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+        "MODEL_NAME_CLAUDE", "claude-3-5-sonnet-20241022"
+    )
 elif ENGINE == "gemini":
-    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_GEMINI", "gemini-1.5-pro-latest")
+    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+        "MODEL_NAME_GEMINI", "gemini-1.5-pro-latest"
+    )
 elif ENGINE == "lmstudio":
-    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_LM", "llama-3.3-70b-instruct")
+    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+        "MODEL_NAME_LM", "llama-3.3-70b-instruct"
+    )
 elif ENGINE == "anything":
-    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_ANY", "llama-3.3-70b-instruct")
+    MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
+        "MODEL_NAME_ANY", "llama-3.3-70b-instruct"
+    )
 
 print(f"✅ Model: {MODEL_NAME}")
+
 
 # State typing
 class PipelineState(TypedDict, total=False):
@@ -107,20 +131,22 @@ class PipelineState(TypedDict, total=False):
     additional_facts: Dict[str, str]
     result: Optional[str]
 
+
 # LLM call function - unified dla wszystkich silników
 def call_llm(prompt: str, temperature: float = 0) -> str:
     """Uniwersalna funkcja wywołania LLM z optymalnymi ustawieniami"""
     if ENGINE == "openai":
         from openai import OpenAI
+
         client = OpenAI(
-            api_key=os.getenv('OPENAI_API_KEY'),
-            base_url=os.getenv('OPENAI_API_URL') or None
+            api_key=os.getenv("OPENAI_API_KEY"),
+            base_url=os.getenv("OPENAI_API_URL") or None,
         )
         resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
-            max_tokens=2000
+            max_tokens=2000,
         )
         return resp.choices[0].message.content.strip()
 
@@ -128,41 +154,57 @@ def call_llm(prompt: str, temperature: float = 0) -> str:
         try:
             from anthropic import Anthropic
         except ImportError:
-            print("❌ Musisz zainstalować anthropic: pip install anthropic", file=sys.stderr)
+            print(
+                "❌ Musisz zainstalować anthropic: pip install anthropic",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
-        client = Anthropic(api_key=os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY"))
+        client = Anthropic(
+            api_key=os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+        )
         resp = client.messages.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
-            max_tokens=2000
+            max_tokens=2000,
         )
         return resp.content[0].text.strip()
 
     elif ENGINE in {"lmstudio", "anything"}:
         from openai import OpenAI
-        base_url = os.getenv("LMSTUDIO_API_URL", "http://localhost:1234/v1") if ENGINE == "lmstudio" else os.getenv("ANYTHING_API_URL", "http://localhost:1234/v1")
-        api_key = os.getenv("LMSTUDIO_API_KEY", "local") if ENGINE == "lmstudio" else os.getenv("ANYTHING_API_KEY", "local")
+
+        base_url = (
+            os.getenv("LMSTUDIO_API_URL", "http://localhost:1234/v1")
+            if ENGINE == "lmstudio"
+            else os.getenv("ANYTHING_API_URL", "http://localhost:1234/v1")
+        )
+        api_key = (
+            os.getenv("LMSTUDIO_API_KEY", "local")
+            if ENGINE == "lmstudio"
+            else os.getenv("ANYTHING_API_KEY", "local")
+        )
 
         client = OpenAI(api_key=api_key, base_url=base_url)
         resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
-            max_tokens=2000
+            max_tokens=2000,
         )
         return resp.choices[0].message.content.strip()
 
     elif ENGINE == "gemini":
         import google.generativeai as genai
+
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         model = genai.GenerativeModel(MODEL_NAME)
         response = model.generate_content(
             [prompt],
-            generation_config={"temperature": temperature, "max_output_tokens": 2000}
+            generation_config={"temperature": temperature, "max_output_tokens": 2000},
         )
         return response.text.strip()
+
 
 # Helper functions
 def fetch_json(url: str) -> Optional[Dict[str, Any]]:
@@ -175,34 +217,36 @@ def fetch_json(url: str) -> Optional[Dict[str, Any]]:
         logger.error(f"❌ Błąd pobierania {url}: {e}")
         return None
 
+
 def download_and_extract_zip(url: str, dest_dir: Path) -> bool:
     """Pobiera i rozpakowuje archiwum ZIP"""
     if not url:
         return False
-    
+
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
         zip_path = dest_dir / "download.zip"
-        
+
         logger.info(f"📥 Pobieranie z {url}...")
         response = requests.get(url, stream=True)
         response.raise_for_status()
-        
+
         with open(zip_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
-        
+
         logger.info(f"📦 Rozpakowywanie do {dest_dir}...")
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(dest_dir)
-        
+
         zip_path.unlink()
         logger.info(f"✅ Rozpakowano pomyślnie")
         return True
-        
+
     except Exception as e:
         logger.error(f"❌ Błąd pobierania/rozpakowywania {url}: {e}")
         return False
+
 
 def ensure_fabryka_data() -> Optional[Path]:
     """Pobiera pliki fabryki TYLKO dla Barbary i Aleksandra"""
@@ -210,15 +254,15 @@ def ensure_fabryka_data() -> Optional[Path]:
         logger.info("⏭️  Pomijam pobieranie danych (--skip-downloads)")
         fabryka_dir = Path("fabryka")
         return fabryka_dir if fabryka_dir.exists() else None
-    
+
     # Sprawdź pliki fabryki
     fabryka_dir = Path("fabryka")
     facts_dir = fabryka_dir / "facts"
-    
+
     # Kluczowe pliki: f04.txt (Aleksander), f05.txt (Barbara)
     key_files = [facts_dir / "f04.txt", facts_dir / "f05.txt"]
     missing_files = [f for f in key_files if not f.exists()]
-    
+
     if missing_files and FABRYKA_URL:
         logger.info("🏭 Pobieram pliki fabryki dla Barbary i Aleksandra...")
         if download_and_extract_zip(FABRYKA_URL, fabryka_dir):
@@ -234,16 +278,17 @@ def ensure_fabryka_data() -> Optional[Path]:
         logger.error("❌ BRAK FABRYKA_URL i brak lokalnych plików!")
         return None
 
+
 def load_barbara_aleksander_facts(fabryka_dir: Path) -> Dict[str, str]:
     """Ładuje TYLKO fakty o Barbarze i Aleksandrze"""
     facts = {}
-    
+
     if not fabryka_dir:
         logger.error("❌ Brak dostępu do plików fabryki!")
         return facts
-    
+
     facts_dir = fabryka_dir / "facts"
-    
+
     # f04.txt = Aleksander Ragowski (dla pytania 06)
     aleksander_file = facts_dir / "f04.txt"
     if aleksander_file.exists():
@@ -255,8 +300,8 @@ def load_barbara_aleksander_facts(fabryka_dir: Path) -> Dict[str, str]:
             logger.error(f"❌ Błąd f04.txt: {e}")
     else:
         logger.error("❌ BRAK f04.txt - pytanie 06 może się nie udać!")
-    
-    # f05.txt = Barbara Zawadzka (dla pytania 03)  
+
+    # f05.txt = Barbara Zawadzka (dla pytania 03)
     barbara_file = facts_dir / "f05.txt"
     if barbara_file.exists():
         try:
@@ -267,18 +312,21 @@ def load_barbara_aleksander_facts(fabryka_dir: Path) -> Dict[str, str]:
             logger.error(f"❌ Błąd f05.txt: {e}")
     else:
         logger.error("❌ BRAK f05.txt - pytanie 03 może się nie udać!")
-    
+
     return facts
+
 
 def verify_with_api(url: str, password: str) -> Optional[str]:
     """Weryfikuje informację poprzez API"""
     try:
         payload = {"password": password}
         response = requests.post(url, json=payload, timeout=10)
-        
+
         if args.debug:
-            logger.info(f"Testing {url} with password {password[:4]}... -> Status: {response.status_code}")
-        
+            logger.info(
+                f"Testing {url} with password {password[:4]}... -> Status: {response.status_code}"
+            )
+
         if response.status_code == 200:
             return response.text
         else:
@@ -288,14 +336,15 @@ def verify_with_api(url: str, password: str) -> Optional[str]:
             logger.error(f"❌ Błąd weryfikacji API {url}: {e}")
         return None
 
+
 def clean_api_response(response: str) -> str:
     """Clean API response to extract meaningful content"""
     if not response:
         return ""
 
     # Remove HTML tags and parse JSON
-    clean = re.sub(r'<[^>]+>', '', response).strip()
-    
+    clean = re.sub(r"<[^>]+>", "", response).strip()
+
     try:
         # Try to parse as JSON
         data = json.loads(clean)
@@ -309,12 +358,13 @@ def clean_api_response(response: str) -> str:
         pass
 
     # Look for hash-like strings (32+ hex chars)
-    hash_pattern = r'[a-f0-9]{32,}'
+    hash_pattern = r"[a-f0-9]{32,}"
     hash_match = re.search(hash_pattern, clean, re.IGNORECASE)
     if hash_match:
         return hash_match.group(0)
 
     return clean
+
 
 # ENHANCED ANALYTICAL FUNCTIONS with high-quality prompts
 def analyze_liar_from_conversations(conversations: List[List[str]]) -> str:
@@ -399,62 +449,74 @@ Przeanalizuj każdą osobę występującą w rozmowach i oceń wiarygodność je
 Zwróć TYLKO IMIĘ osoby która najwyraźniej i najczęściej kłamie:"""
 
     response = call_llm(prompt)
-    
+
     if args.debug:
         logger.info(f"Liar analysis response: {response}")
-    
+
     # Enhanced extraction for all engines
     response_lower = response.lower().strip()
-    
+
     # Priority check for Samuel (known correct answer based on other engines)
     if "samuel" in response_lower:
         return "Samuel"
-    
+
     # Check for other known names
-    known_names = ["Rafał", "Barbara", "Aleksander", "Andrzej", "Stefan", "Azazel", "Lucyfer", "Zygfryd", "Witek", "Tomasz"]
-    
+    known_names = [
+        "Rafał",
+        "Barbara",
+        "Aleksander",
+        "Andrzej",
+        "Stefan",
+        "Azazel",
+        "Lucyfer",
+        "Zygfryd",
+        "Witek",
+        "Tomasz",
+    ]
+
     for name in known_names:
         if name.lower() in response_lower:
             return name
-    
+
     # Extract any name-like word from response
     words = response.strip().split()
     for word in words:
-        clean_word = word.strip('.,;:!"\'').title()
+        clean_word = word.strip(".,;:!\"'").title()
         if len(clean_word) > 2 and clean_word.isalpha() and clean_word in known_names:
             return clean_word
-    
+
     # Final extraction attempt
-    name_pattern = r'\b([A-ZŁŚŻŹ][a-ząęółśżźćń]+)\b'
+    name_pattern = r"\b([A-ZŁŚŻŹ][a-ząęółśżźćń]+)\b"
     names = re.findall(name_pattern, response)
     for name in names:
         if name in known_names:
             return name
-    
+
     return ""
+
 
 def find_password_from_conversations(conversations: List[List[str]]) -> str:
     """Find password from conversations with high-quality prompt"""
     all_text = "\n".join(["\n".join([str(f) for f in conv]) for conv in conversations])
-    
+
     if args.debug:
         logger.info(f"Searching for password in {len(all_text)} characters...")
-    
+
     # Look for NONOMNISMORIAR first (pattern matching)
     if "NONOMNISMORIAR" in all_text:
         if args.debug:
             logger.info("Found NONOMNISMORIAR password directly")
         return "NONOMNISMORIAR"
-    
+
     # Enhanced password patterns
     password_patterns = [
         r'(?:hasło|password|kod)[\s:]+["\']?([A-Z0-9]+)["\']?',
         r'["\']password["\']\s*:\s*["\']([^"\']+)["\']',
         r'(?:użyj|use|send|wyślij).*?["\']([A-Z0-9]{8,})["\']',
-        r'\b([A-Z]{10,})\b',  # Long uppercase strings
-        r'(?:hasło|password).*?([A-Z]{8,})',
+        r"\b([A-Z]{10,})\b",  # Long uppercase strings
+        r"(?:hasło|password).*?([A-Z]{8,})",
     ]
-    
+
     found_passwords = []
     for pattern in password_patterns:
         matches = re.findall(pattern, all_text, re.IGNORECASE | re.MULTILINE)
@@ -463,13 +525,13 @@ def find_password_from_conversations(conversations: List[List[str]]) -> str:
                 match = match[0] if match else ""
             if len(match) >= 8:
                 found_passwords.append(match.upper())
-    
+
     if found_passwords:
         for pwd in found_passwords:
             if "NONOMNISMORIAR" in pwd:
                 return "NONOMNISMORIAR"
         return max(found_passwords, key=len)
-    
+
     # LLM fallback with high-quality prompt
     prompt = f"""Jesteś ekspertem w analizie komunikacji technicznej. W poniższych rozmowach telefonicznych znajdź dokładne hasło do API.
 
@@ -491,76 +553,85 @@ Przeanalizuj rozmowy dokładnie i znajdź hasło API.
 Zwróć TYLKO samo hasło (bez cudzysłowów ani dodatkowego tekstu):"""
 
     response = call_llm(prompt)
-    
+
     if args.debug:
         logger.info(f"LLM password response: {response}")
-    
+
     # Look for NONOMNISMORIAR specifically
     if "NONOMNISMORIAR" in response:
         return "NONOMNISMORIAR"
-    
+
     # Extract any long string
-    candidates = re.findall(r'[A-Z]{8,}', response)
+    candidates = re.findall(r"[A-Z]{8,}", response)
     if candidates:
         return candidates[0]
-    
+
     return ""
 
-def extract_endpoint_from_conversations_precise(conversations: List[List[str]], liar: str) -> str:
+
+def extract_endpoint_from_conversations_precise(
+    conversations: List[List[str]], liar: str
+) -> str:
     """Extract API endpoint by analyzing who said what, excluding liar's URLs"""
     url_pattern = r'https?://[^\s<>"\'\)]+(?:/[^\s<>"\'\)]*)?'
-    
+
     # Store URLs with speaker context
     url_speakers = []  # [(url, speaker, confidence)]
-    
+
     for conv_idx, conv in enumerate(conversations):
         current_speaker = None
-        
+
         for line in conv:
             line_text = str(line).strip()
             if not line_text:
                 continue
-            
+
             # Try to identify who is speaking in this line
             speaker_identified = False
-            
+
             # Pattern 1: "- Name:" at the start
-            speaker_match = re.match(r'^\s*-\s*([A-ZŁŚŻŹ][a-ząęółśżźćń]+)[\s:,]', line_text)
+            speaker_match = re.match(
+                r"^\s*-\s*([A-ZŁŚŻŹ][a-ząęółśżźćń]+)[\s:,]", line_text
+            )
             if speaker_match:
                 current_speaker = speaker_match.group(1)
                 speaker_identified = True
-                
+
             # Pattern 2: "Tu Name" or "Jestem Name"
             if not speaker_identified:
-                intro_match = re.search(r'(?:Tu|Jestem|Mówi)\s+([A-ZŁŚŻŹ][a-ząęółśżźćń]+)', line_text)
+                intro_match = re.search(
+                    r"(?:Tu|Jestem|Mówi)\s+([A-ZŁŚŻŹ][a-ząęółśżźćń]+)", line_text
+                )
                 if intro_match:
                     current_speaker = intro_match.group(1)
                     speaker_identified = True
-            
+
             # Pattern 3: If line starts with name
             if not speaker_identified:
-                name_match = re.match(r'^([A-ZŁŚŻŹ][a-ząęółśżźćń]+):\s', line_text)
+                name_match = re.match(r"^([A-ZŁŚŻŹ][a-ząęółśżźćń]+):\s", line_text)
                 if name_match:
                     current_speaker = name_match.group(1)
                     speaker_identified = True
-            
+
             # Extract URLs from this line
             urls = re.findall(url_pattern, line_text)
             for url in urls:
-                clean_url = url.rstrip('.,;:)"\'')
+                clean_url = url.rstrip(".,;:)\"'")
                 if "rafal" in clean_url and "ag3nts" in clean_url:
                     confidence = 3 if speaker_identified else 1
                     url_speakers.append((clean_url, current_speaker, confidence))
-                    
+
                     if args.debug:
-                        logger.info(f"Found URL: {clean_url} from speaker: {current_speaker} (confidence: {confidence})")
-    
+                        logger.info(
+                            f"Found URL: {clean_url} from speaker: {current_speaker} (confidence: {confidence})"
+                        )
+
     # Filter out URLs from the liar and test them
     password = find_password_from_conversations(conversations)
     if not password:
         logger.warning("❌ Nie znaleziono hasła, nie można przetestować URL-ów")
         return ""
-    
+
     # Test URLs not from liar first
     trusted_urls = []
     for url, speaker, confidence in url_speakers:
@@ -572,10 +643,10 @@ def extract_endpoint_from_conversations_precise(conversations: List[List[str]], 
                 if args.debug:
                     logger.info(f"✅ Working URL from {speaker}: {url}")
                 return url
-    
+
     # If no trusted URLs work, use LLM with high-quality prompt
     all_text = "\n".join(["\n".join([str(f) for f in conv]) for conv in conversations])
-    
+
     enhanced_prompt = f"""Jesteś ekspertem w analizie rozmów i identyfikacji wiarygodnych źródeł informacji. Przeanalizuj rozmowy i znajdź prawdziwy URL do API.
 
 ROZMOWY:
@@ -601,29 +672,32 @@ WZORCE IDENTYFIKACJI MÓWCY:
 Przeanalizuj krok po kroku i zwróć TYLKO URL od osoby która nie jest kłamcą:"""
 
     response = call_llm(enhanced_prompt)
-    
+
     if args.debug:
         logger.info(f"LLM URL analysis response: {response}")
-    
+
     # Extract URLs from LLM response
     urls = re.findall(url_pattern, response)
-    
+
     # Test all extracted URLs
     for url in urls:
-        clean_url = url.rstrip('.,;:)"\'')
+        clean_url = url.rstrip(".,;:)\"'")
         if "rafal" in clean_url:
             if args.debug:
                 logger.info(f"Testing LLM suggested URL: {clean_url}")
             if verify_with_api(clean_url, password):
                 return clean_url
-    
+
     return ""
 
-def find_nickname_from_conversations_enhanced(conversations: List[List[str]], barbara_facts: str) -> str:
+
+def find_nickname_from_conversations_enhanced(
+    conversations: List[List[str]], barbara_facts: str
+) -> str:
     """Find Barbara's boyfriend's nickname using improved prompt focused on facts"""
-    
+
     all_text = "\n".join(["\n".join([str(f) for f in conv]) for conv in conversations])
-    
+
     # POPRAWIONY PROMPT - bardziej bezpośredni i fokusowy
     prompt = f"""Z dokumentów i rozmów znajdź przezwisko chłopaka Barbary.
 
@@ -645,34 +719,48 @@ Jeśli Aleksander był nauczycielem, jakim przezwiskiem Barbara mogłaby go nazy
 Odpowiedź (tylko jedno słowo):"""
 
     response = call_llm(prompt)
-    
+
     if args.debug:
         logger.info(f"Nickname analysis response: {response}")
-    
+
     # Improved extraction - look for "nauczyciel" specifically first
     response_lower = response.lower()
-    
+
     # Direct keyword matching for expected answer
     if "nauczyciel" in response_lower:
         return "nauczyciel"
-    
+
     # Extract the most likely nickname
     words = response.strip().split()
     for word in words:
-        clean_word = word.strip('.,;:!"\'').lower()
-        if len(clean_word) > 2 and clean_word.isalpha() and clean_word not in ["barbara", "jej", "chłopak", "partner", "chłopakiem", "aleksander", "aleksandrem"]:
+        clean_word = word.strip(".,;:!\"'").lower()
+        if (
+            len(clean_word) > 2
+            and clean_word.isalpha()
+            and clean_word
+            not in [
+                "barbara",
+                "jej",
+                "chłopak",
+                "partner",
+                "chłopakiem",
+                "aleksander",
+                "aleksandrem",
+            ]
+        ):
             return clean_word
-    
+
     return ""
+
 
 def find_first_conversation_speakers_enhanced(first_conversation: List[str]) -> str:
     """Find speakers in first conversation using high-quality prompt"""
     if not first_conversation:
         logger.warning("❌ Brak pierwszej rozmowy")
         return ""
-    
+
     conversation_text = "\n".join([str(f) for f in first_conversation])
-    
+
     enhanced_prompt = f"""Jesteś ekspertem w analizie rozmów telefonicznych. Przeanalizuj pierwszą rozmowę i zidentyfikuj DOKŁADNIE dwie osoby które ze sobą rozmawiają.
 
 PIERWSZA ROZMOWA:
@@ -696,44 +784,60 @@ Odpowiedź TYLKO w formacie: "Imię1, Imię2":"""
 
     try:
         response = call_llm(enhanced_prompt, temperature=0.1)
-        
+
         if args.debug:
             logger.info(f"Enhanced speakers response: {response}")
-        
+
         # Extract two names from response
-        known_names = ["Barbara", "Samuel", "Aleksander", "Andrzej", "Rafał", "Witek", "Zygfryd", "Tomasz", "Azazel"]
+        known_names = [
+            "Barbara",
+            "Samuel",
+            "Aleksander",
+            "Andrzej",
+            "Rafał",
+            "Witek",
+            "Zygfryd",
+            "Tomasz",
+            "Azazel",
+        ]
         found_names = []
         for name in known_names:
             if name in response and name not in found_names:
                 found_names.append(name)
-        
+
         if len(found_names) >= 2:
             return f"{found_names[0]}, {found_names[1]}"
         elif len(found_names) == 1:
             # Try to find a second name in the response
             words = response.split()
             for word in words:
-                clean_word = word.strip('.,;:!"\'')
-                if clean_word.title() in known_names and clean_word.title() not in found_names:
+                clean_word = word.strip(".,;:!\"'")
+                if (
+                    clean_word.title() in known_names
+                    and clean_word.title() not in found_names
+                ):
                     found_names.append(clean_word.title())
                     break
-            
+
             if len(found_names) >= 2:
                 return f"{found_names[0]}, {found_names[1]}"
-        
+
         # If we can't find two clear names, return empty to indicate failure
         logger.warning(f"❌ Nie można zidentyfikować dwóch rozmówców: {response}")
         return ""
-                
+
     except Exception as e:
         logger.error(f"❌ Error in LLM speakers detection: {e}")
         return ""
 
-def find_api_provider_from_conversations_enhanced(conversations: List[List[str]], aleksander_facts: str) -> str:
+
+def find_api_provider_from_conversations_enhanced(
+    conversations: List[List[str]], aleksander_facts: str
+) -> str:
     """Find who provided API access but doesn't know password using high-quality prompt"""
-    
+
     all_text = "\n".join(["\n".join([str(f) for f in conv]) for conv in conversations])
-    
+
     # Enhanced prompt with stronger guidance toward Aleksander
     enhanced_prompt = f"""Jesteś ekspertem w analizie komunikacji technicznej. Przeanalizuj rozmowy i kontekst, aby zidentyfikować osobę która spełnia określone warunki.
 
@@ -768,51 +872,61 @@ Na podstawie kontekstu i logiki, kto najprawdopodobniej ma dostęp do API ale ni
 TYLKO IMIĘ OSOBY:"""
 
     response = call_llm(enhanced_prompt)
-    
+
     if args.debug:
         logger.info(f"Enhanced API provider response: {response}")
-    
+
     # Prioritize Aleksander based on facts
     if "aleksander" in response.lower():
         return "Aleksander"
-    
+
     # Extract name from response
-    known_names = ["Aleksander", "Andrzej", "Rafał", "Barbara", "Zygfryd", "Witek", "Samuel"]
-    
+    known_names = [
+        "Aleksander",
+        "Andrzej",
+        "Rafał",
+        "Barbara",
+        "Zygfryd",
+        "Witek",
+        "Samuel",
+    ]
+
     for name in known_names:
         if name in response:
             return name
-    
+
     # Extract any name from response as fallback
     words = response.strip().split()
     for word in words:
-        clean_word = word.strip('.,;:!"\'').title()
+        clean_word = word.strip(".,;:!\"'").title()
         if clean_word in known_names:
             return clean_word
-    
+
     return ""
+
 
 # GRAPH NODES
 def setup_data_node(state: PipelineState) -> PipelineState:
     """Pobiera i konfiguruje kluczowe dane"""
     logger.info("📦 Setup danych - pliki fabryki dla Barbary i Aleksandra...")
-    
+
     # Pobierz pliki fabryki
     fabryka_dir = ensure_fabryka_data()
-    
+
     if not fabryka_dir:
         logger.error("❌ Brak dostępu do plików fabryki - zadanie może się nie udać!")
-    
+
     # Załaduj fakty o Barbarze i Aleksandrze
     facts = load_barbara_aleksander_facts(fabryka_dir) if fabryka_dir else {}
-    
+
     # Zapisz do state
     state["facts"] = {"basic": "loaded"}
     state["additional_facts"] = facts
-    
+
     logger.info(f"✅ Setup ukończony: {len(facts)} faktów załadowanych")
-    
+
     return state
+
 
 def fetch_data_node(state: PipelineState) -> PipelineState:
     """Pobiera dane transkrypcji rozmów"""
@@ -825,7 +939,7 @@ def fetch_data_node(state: PipelineState) -> PipelineState:
         if sorted_data:
             if args.debug:
                 logger.info(f"Sorted data keys: {list(sorted_data.keys())}")
-            
+
             conversations = []
             for i in range(1, 6):
                 key = f"rozmowa{i}"
@@ -835,15 +949,19 @@ def fetch_data_node(state: PipelineState) -> PipelineState:
                         conversations.append(conv_data)
                     else:
                         conversations.append([str(conv_data)])
-                    
+
                     if args.debug:
                         logger.info(f"Rozmowa {i}: {len(conversations[-1])} elementów")
                         if conversations[-1]:
-                            logger.info(f"   Sample: {str(conversations[-1][0])[:100]}...")
-            
+                            logger.info(
+                                f"   Sample: {str(conversations[-1][0])[:100]}..."
+                            )
+
             if conversations and any(len(conv) > 0 for conv in conversations):
                 state["conversations"] = conversations
-                state["conversation_metadata"] = {i: {"length": len(conv)} for i, conv in enumerate(conversations)}
+                state["conversation_metadata"] = {
+                    i: {"length": len(conv)} for i, conv in enumerate(conversations)
+                }
                 logger.info(f"✅ Załadowano {len(conversations)} posortowanych rozmów")
                 return state
 
@@ -858,11 +976,11 @@ def fetch_data_node(state: PipelineState) -> PipelineState:
         logger.info(f"Raw data keys: {list(data.keys())}")
 
     state["raw_data"] = data
-    
+
     # Enhanced conversation extraction
     conversations = []
     all_text_content = []
-    
+
     for key, value in data.items():
         if key != "nagrania":
             if isinstance(value, str):
@@ -875,32 +993,32 @@ def fetch_data_node(state: PipelineState) -> PipelineState:
                 for item in value:
                     if isinstance(item, str) and len(item) > 50:
                         all_text_content.append(item)
-    
+
     if args.debug:
         logger.info(f"Extracted {len(all_text_content)} text fragments")
-    
+
     # Split into 5 conversations using content analysis
     if all_text_content:
         conversations = []
         chunk_size = max(1, len(all_text_content) // 5)
-        
+
         for i in range(5):
             start_idx = i * chunk_size
             end_idx = (i + 1) * chunk_size if i < 4 else len(all_text_content)
             conv = all_text_content[start_idx:end_idx]
             conversations.append(conv if conv else [])
-    
+
     # Ensure we have 5 conversations
     while len(conversations) < 5:
         conversations.append([])
-    
+
     # Create metadata
     metadata = {}
     for i, conv in enumerate(conversations):
         metadata[i] = {
             "start": conv[0] if conv else "",
             "end": conv[-1] if conv else "",
-            "length": len(conv)
+            "length": len(conv),
         }
 
     state["conversations"] = conversations
@@ -912,6 +1030,7 @@ def fetch_data_node(state: PipelineState) -> PipelineState:
 
     return state
 
+
 def identify_speakers_node(state: PipelineState) -> PipelineState:
     """Identyfikuje osoby w rozmowach"""
     conversations = state.get("conversations", [])
@@ -922,7 +1041,18 @@ def identify_speakers_node(state: PipelineState) -> PipelineState:
 
     # Basic speaker identification
     speakers = defaultdict(set)
-    known_names = ["Rafał", "Barbara", "Aleksander", "Andrzej", "Stefan", "Samuel", "Azazel", "Lucyfer", "Zygfryd", "Witek"]
+    known_names = [
+        "Rafał",
+        "Barbara",
+        "Aleksander",
+        "Andrzej",
+        "Stefan",
+        "Samuel",
+        "Azazel",
+        "Lucyfer",
+        "Zygfryd",
+        "Witek",
+    ]
 
     for conv_idx, conversation in enumerate(conversations):
         conversation_text = " ".join([str(fragment) for fragment in conversation])
@@ -939,6 +1069,7 @@ def identify_speakers_node(state: PipelineState) -> PipelineState:
 
     return state
 
+
 def find_liar_node(state: PipelineState) -> PipelineState:
     """Znajduje kłamcę przez analizę rozmów"""
     conversations = state.get("conversations", [])
@@ -950,6 +1081,7 @@ def find_liar_node(state: PipelineState) -> PipelineState:
     logger.info(f"🎯 Zidentyfikowany kłamca: {identified_liar}")
 
     return state
+
 
 def fetch_questions_node(state: PipelineState) -> PipelineState:
     """Pobiera pytania od centrali"""
@@ -967,6 +1099,7 @@ def fetch_questions_node(state: PipelineState) -> PipelineState:
         logger.info(f"   {q_id}: {question}")
 
     return state
+
 
 def answer_questions_node(state: PipelineState) -> PipelineState:
     """Odpowiada na pytania używając wysokiej jakości promptów"""
@@ -988,12 +1121,16 @@ def answer_questions_node(state: PipelineState) -> PipelineState:
                 logger.error("❌ Nie zidentyfikowano kłamcy")
                 answers[q_id] = ""
             else:
-                endpoint = extract_endpoint_from_conversations_precise(conversations, identified_liar)
+                endpoint = extract_endpoint_from_conversations_precise(
+                    conversations, identified_liar
+                )
                 answers[q_id] = endpoint
 
         elif q_id == "03":  # Barbara's boyfriend nickname
             barbara_facts = additional_facts.get("barbara_zawadzka", "")
-            nickname = find_nickname_from_conversations_enhanced(conversations, barbara_facts)
+            nickname = find_nickname_from_conversations_enhanced(
+                conversations, barbara_facts
+            )
             answers[q_id] = nickname
 
         elif q_id == "04":  # First conversation participants
@@ -1012,14 +1149,20 @@ def answer_questions_node(state: PipelineState) -> PipelineState:
 
         elif q_id == "06":  # Who provided API access but no password
             aleksander_facts = additional_facts.get("aleksander_ragowski", "")
-            provider = find_api_provider_from_conversations_enhanced(conversations, aleksander_facts)
+            provider = find_api_provider_from_conversations_enhanced(
+                conversations, aleksander_facts
+            )
             answers[q_id] = provider
 
         else:
             # General question answering
-            all_conversations = "\n".join([f"=== ROZMOWA {i+1} ===\n" + "\n".join([str(f) for f in conv]) 
-                                         for i, conv in enumerate(conversations)])
-            
+            all_conversations = "\n".join(
+                [
+                    f"=== ROZMOWA {i+1} ===\n" + "\n".join([str(f) for f in conv])
+                    for i, conv in enumerate(conversations)
+                ]
+            )
+
             prompt = f"""Na podstawie poniższych rozmów telefonicznych odpowiedz na pytanie krótko i konkretnie.
 
 ROZMOWY:
@@ -1039,6 +1182,7 @@ Odpowiedź:"""
     state["answers"] = answers
     return state
 
+
 def send_answers_node(state: PipelineState) -> PipelineState:
     """Wysyła odpowiedzi do centrali"""
     answers = state.get("answers", {})
@@ -1049,17 +1193,15 @@ def send_answers_node(state: PipelineState) -> PipelineState:
 
     # Validate answers - remove empty ones
     valid_answers = {k: v for k, v in answers.items() if v and v.strip()}
-    
+
     if len(valid_answers) < len(answers):
-        logger.warning(f"⚠️  Niektóre odpowiedzi są puste. Mam {len(valid_answers)} z {len(answers)} odpowiedzi.")
+        logger.warning(
+            f"⚠️  Niektóre odpowiedzi są puste. Mam {len(valid_answers)} z {len(answers)} odpowiedzi."
+        )
         empty_answers = [k for k, v in answers.items() if not v or not v.strip()]
         logger.warning(f"   Puste odpowiedzi: {empty_answers}")
 
-    payload = {
-        "task": "phone",
-        "apikey": CENTRALA_API_KEY,
-        "answer": valid_answers
-    }
+    payload = {"task": "phone", "apikey": CENTRALA_API_KEY, "answer": valid_answers}
 
     logger.info(f"📤 Wysyłam odpowiedzi...")
     if args.debug:
@@ -1080,10 +1222,11 @@ def send_answers_node(state: PipelineState) -> PipelineState:
 
     except Exception as e:
         logger.error(f"❌ Błąd wysyłania: {e}")
-        if hasattr(e, 'response') and e.response:
+        if hasattr(e, "response") and e.response:
             logger.error(f"Szczegóły: {e.response.text}")
 
     return state
+
 
 def build_graph() -> Any:
     """Buduje graf LangGraph"""
@@ -1108,6 +1251,7 @@ def build_graph() -> Any:
 
     return graph.compile()
 
+
 def main() -> None:
     print("=== Zadanie 20 (S05E01): Analiza transkrypcji rozmów - ENHANCED SIMPLE ===")
     print(f"🚀 Używam silnika: {ENGINE}")
@@ -1121,7 +1265,9 @@ def main() -> None:
     else:
         print("📦 Tryb: pobieranie plików fabryki dla Barbary i Aleksandra")
 
-    print("🎯 WERSJA: Enhanced Simple - wysokiej jakości prompty z improved Gemini liar detection")
+    print(
+        "🎯 WERSJA: Enhanced Simple - wysokiej jakości prompty z improved Gemini liar detection"
+    )
     print("\nStartuje pipeline...\n")
 
     try:
@@ -1139,7 +1285,7 @@ def main() -> None:
             for q_id, answer in sorted(answers.items()):
                 status = "✅" if answer else "❌"
                 print(f"   {q_id}: {answer} {status}")
-                
+
             # Show final result
             if "FLG" in str(result.get("result", "")):
                 print(f"\n🏆 SUKCES! {result['result']}")
@@ -1148,13 +1294,17 @@ def main() -> None:
             print("\n💡 Spróbuj:")
             print("1. python zad20.py --debug  # Włącz szczegółowe logi")
             print("2. python zad20.py --engine openai  # Spróbuj inny model")
-            print("3. python zad20.py --skip-downloads  # Pomiń pobieranie jeśli pliki już istnieją")
+            print(
+                "3. python zad20.py --skip-downloads  # Pomiń pobieranie jeśli pliki już istnieją"
+            )
 
     except Exception as e:
         print(f"❌ Błąd: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

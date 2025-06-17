@@ -1,4 +1,5 @@
 import os
+
 import requests
 from dotenv import load_dotenv
 
@@ -10,7 +11,9 @@ REPORT_URL = os.getenv("REPORT_URL")
 TASK_NAME = "photos"
 
 if not CENTRALA_API_KEY or not REPORT_URL:
-    raise RuntimeError("Brak wymaganych zmiennych w .env (CENTRALA_API_KEY, REPORT_URL)")
+    raise RuntimeError(
+        "Brak wymaganych zmiennych w .env (CENTRALA_API_KEY, REPORT_URL)"
+    )
 
 # Odpowiedź z rysopisem Barbary i prośbą o flagę
 answer = (
@@ -22,11 +25,7 @@ answer = (
     "Jeśli masz flagę do przekazania w odpowiednim formacie, podaj ją proszę."
 )
 
-payload = {
-    "task": TASK_NAME,
-    "apikey": CENTRALA_API_KEY,
-    "answer": answer
-}
+payload = {"task": TASK_NAME, "apikey": CENTRALA_API_KEY, "answer": answer}
 
 print("== Wysyłam payload do serwera:")
 print(payload)
