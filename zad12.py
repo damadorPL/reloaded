@@ -15,6 +15,11 @@ import requests
 from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 
+# Stałe do poprawki duplikacji literałów
+HTML_PARSER = "html.parser"
+DIGIT_REGEX = r"(\d{1,4})"
+BARBARA_NAME = "barbara zawadzka"
+
 # 1. Konfiguracja i wykrywanie silnika
 load_dotenv(override=True)
 
@@ -197,7 +202,8 @@ def make_db_request(query: str) -> Optional[Dict[str, Any]]:
         result = response.json()
 
         if "reply" in result and result["reply"] is not None:
-            print(f"✅ Otrzymano odpowiedź")
+            # POPRAWKA SONARA: Linia 200 - usunięto niepotrzebny f-string
+            print("✅ Otrzymano odpowiedź")
             return result["reply"]
         else:
             print(f"⚠️  API zwróciło nieoczekiwaną odpowiedź: {result}")
@@ -327,6 +333,7 @@ def execute_query_node(state: PipelineState) -> PipelineState:
     return state
 
 
+# POPRAWKA SONARA: Linia 350 - BLOCKER - funkcja nie zawsze zwraca tę samą wartość
 def extract_ids_node(state: PipelineState) -> PipelineState:
     """Ekstraktuje ID datacenter z wyników zapytania"""
     print("\n🔢 Ekstraktuję ID datacenter...")
@@ -334,12 +341,21 @@ def extract_ids_node(state: PipelineState) -> PipelineState:
     query_result = state.get("query_result", [])
     datacenter_ids = []
 
+    if not query_result:
+        print("❌ Brak wyników do przetworzenia")
+        state["datacenter_ids"] = datacenter_ids
+        return state
+
     for row in query_result:
         # Szukaj klucza zawierającego DC_ID
         for key, value in row.items():
             if "DC_ID" in key.upper() or "dc_id" in key:
-                datacenter_ids.append(int(value))
-                break
+                try:
+                    datacenter_ids.append(int(value))
+                    break
+                except (ValueError, TypeError):
+                    print(f"⚠️  Nie można przekonwertować wartości {value} na int")
+                    continue
 
     state["datacenter_ids"] = datacenter_ids
     print(f"✅ Znaleziono {len(datacenter_ids)} datacenter: {datacenter_ids}")
