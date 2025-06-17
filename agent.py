@@ -26,6 +26,7 @@ ERROR_INVALID_TASK = "Niepoprawny numer zadania. Wybierz w zakresie 1-24."
 ERROR_INVALID_SECRET = "Niepoprawny numer sekretu. Wybierz w zakresie 1-9."
 ERROR_TASK_FAILED = "🛑 Zadanie zakończone z błędem."
 ERROR_SECRET_FAILED = "🛑 Sekret zakończony z błędem."
+ERROR_CRITICAL_SYSTEM = "🛑 Krytyczny błąd systemu."
 NOT_SET_VALUE = "(niewartość)"
 FLAGS_JSON = "flags.json"
 SECRETS_JSON = "secrets.json"
@@ -586,6 +587,7 @@ def process_command(cmd: str) -> bool:
     return True
 
 
+# POPRAWKA S3516: Dodano przypadki zwracające False przy krytycznych błędach
 def handle_run_task_command(cmd: str) -> bool:
     """Obsługuje komendę run_task - zwraca czy kontynuować"""
     parts = cmd.split(maxsplit=1)
@@ -603,8 +605,16 @@ def handle_run_task_command(cmd: str) -> bool:
     output, flag_found, error = _execute_task(task_arg)
     
     if error:
+        # Sprawdź czy to krytyczny błąd systemu
+        if isinstance(output, tuple) and len(output) == 2:
+            _, stderr_text = output
+            if stderr_text and any(critical in stderr_text.lower() for critical in 
+                                 ["permission denied", "access denied", "system error", "fatal"]):
+                print(ERROR_CRITICAL_SYSTEM)
+                return False  # Przerwij przy krytycznych błędach systemu
+        
         handle_error_output(output, "zadanie", task_arg, FLAGS_JSON)
-        return True  # Kontynuuj mimo błędu wykonania
+        return True  # Kontynuuj przy zwykłych błędach wykonania
     elif flag_found:
         completed_tasks.add(task_arg)
         print(format_flag_message(output))
@@ -633,8 +643,16 @@ def handle_run_secret_command(cmd: str) -> bool:
     output, flag_found, error = _execute_secret(secret_arg)
     
     if error:
+        # Sprawdź czy to krytyczny błąd systemu
+        if isinstance(output, tuple) and len(output) == 2:
+            _, stderr_text = output
+            if stderr_text and any(critical in stderr_text.lower() for critical in 
+                                 ["permission denied", "access denied", "system error", "fatal"]):
+                print(ERROR_CRITICAL_SYSTEM)
+                return False  # Przerwij przy krytycznych błędach systemu
+        
         handle_error_output(output, "sekret", secret_arg, SECRETS_JSON)
-        return True  # Kontynuuj mimo błędu wykonania
+        return True  # Kontynuuj przy zwykłych błędach wykonania
     elif flag_found:
         completed_secrets.add(secret_arg)
         print(format_flag_message(output))
@@ -654,9 +672,17 @@ def handle_read_env_command(cmd: str) -> bool:
         return True  # Kontynuuj z domyślną wartością
     
     var = extract_argument(parts[1])
+    
+    # POPRAWKA S3516: Dodano sprawdzanie krytycznych zmiennych systemowych
+    if var in ["PATH", "HOME", "USER", "PYTHONPATH"]:
+        value = os.getenv(var)
+        if not value:
+            print(f"⚠️ Krytyczna zmienna systemowa {var} nie jest ustawiona!")
+            return False  # Przerwij jeśli brak krytycznych zmiennych systemowych
+    
     value = os.getenv(var, NOT_SET_VALUE)
     print(value)
-    return True  # Zawsze kontynuuj po odczycie zmiennej
+    return True  # Kontynuuj po normalnym odczycie zmiennej
 
 
 def extract_argument(arg: str) -> str:
