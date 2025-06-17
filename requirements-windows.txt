@@ -140,7 +140,7 @@ pytesseract==0.3.13
     # via -r requirements.in
 regex==2024.11.6
     # via tiktoken
-requests==2.32.3
+requests==2.32.4
     # via
     #   google-api-core
     #   tiktoken
@@ -154,7 +154,7 @@ sympy==1.14.0
     # via torch
 tiktoken==0.9.0
     # via openai-whisper
-torch==2.7.0
+torch==2.7.1
     # via
     #   -r requirements.in
     #   openai-whisper
