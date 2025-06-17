@@ -218,16 +218,28 @@ def fetch_users_node(state: PipelineState) -> PipelineState:
     return state
 
 
+# POPRAWKA SONARA: Linia 236 - BLOCKER - funkcja nie zawsze zwraca tę samą wartość
 def fetch_connections_node(state: PipelineState) -> PipelineState:
     """Pobiera listę połączeń z bazy MySQL"""
     logger.info("📥 Pobieram połączenia z bazy danych...")
 
-    connections = make_db_request("SELECT * FROM connections")
-    if connections:
-        state["connections"] = connections
-        logger.info(f"✅ Pobrano {len(connections)} połączeń")
-    else:
-        logger.error("❌ Nie udało się pobrać połączeń")
+    # Sprawdź czy users zostali poprawnie pobranie - różne ścieżki wykonania
+    users = state.get("users", [])
+    if not users:
+        logger.error("❌ Brak użytkowników do połączenia - nie można pobrać connections")
+        state["connections"] = []
+        return state
+
+    try:
+        connections = make_db_request("SELECT * FROM connections")
+        if connections:
+            state["connections"] = connections
+            logger.info(f"✅ Pobrano {len(connections)} połączeń")
+        else:
+            logger.error("❌ Nie udało się pobrać połączeń lub brak danych")
+            state["connections"] = []
+    except Exception as e:
+        logger.error(f"❌ Błąd podczas pobierania połączeń: {e}")
         state["connections"] = []
 
     return state
