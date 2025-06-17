@@ -22,6 +22,10 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
+# POPRAWKA SONARA: Linia 186, 225 - CRITICAL - stałe zamiast duplikacji literałów
+HTML_PARSER = "html.parser"
+DIGIT_REGEX = r"(\d{1,4})"
+
 # Import Claude integration (opcjonalny)
 try:
     from claude_integration import (add_token_counting_to_openai_call,
@@ -183,7 +187,7 @@ def banner(title: str) -> str:
 
 def get_question(session: requests.Session, url: str) -> str:
     html = session.get(url).text
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, HTML_PARSER)  # POPRAWKA SONARA: użycie stałej
     div = soup.find(id="human-question")
     if div:
         return div.get_text(strip=True)
@@ -222,7 +226,7 @@ def ask_llm(question: str) -> str:
         elif ENGINE in {"lmstudio", "anything"}:
             print(f"[💰 Model lokalny ({ENGINE}) - brak kosztów]")
 
-        m = re.search(r"(\d{1,4})", raw)
+        m = re.search(DIGIT_REGEX, raw)  # POPRAWKA SONARA: użycie stałej
         return m.group(1) if m else raw
 
     elif ENGINE == "claude":
@@ -243,9 +247,10 @@ def ask_llm(question: str) -> str:
         print(
             f"[📊 Prompt: {usage.input_tokens} | Completion: {usage.output_tokens} | Total: {usage.input_tokens + usage.output_tokens}]"
         )
-        print(f"[💰 Koszt Claude: {cost:.6f} USD]")
+        # POPRAWKA SONARA: Linia 259, 260 - MAJOR - usunięcie niepotrzebnych f-stringów
+        print("[💰 Koszt Claude: {:.6f} USD]".format(cost))
 
-        m = re.search(r"(\d{1,4})", raw)
+        m = re.search(DIGIT_REGEX, raw)  # POPRAWKA SONARA: użycie stałej
         return m.group(1) if m else raw
 
     elif ENGINE == "gemini":
@@ -256,9 +261,9 @@ def ask_llm(question: str) -> str:
         )
         raw = response.text.strip()
         print(f"[DEBUG] Otrzymana odpowiedź: {raw}")
-        print(f"[📊 Gemini - brak szczegółów tokenów]")
-        print(f"[💰 Gemini - sprawdź limity w Google AI Studio]")
-        m = re.search(r"(\d{1,4})", raw)
+        print("[📊 Gemini - brak szczegółów tokenów]")
+        print("[💰 Gemini - sprawdź limity w Google AI Studio]")
+        m = re.search(DIGIT_REGEX, raw)  # POPRAWKA SONARA: użycie stałej
         return m.group(1) if m else raw
 
 
@@ -270,7 +275,7 @@ def login_and_get_secret(sess: requests.Session, answer: str):
     r.raise_for_status()
     url = r.url
     if url.rstrip("/") == LOGIN_URL.rstrip("/"):
-        soup = BeautifulSoup(r.text, "html.parser")
+        soup = BeautifulSoup(r.text, HTML_PARSER)  # POPRAWKA SONARA: użycie stałej
         a = soup.find("a", href=re.compile(r"secret", re.I))
         if not a:
             raise ValueError("Nie znaleziono linku do sekretnej strony.")
@@ -290,7 +295,7 @@ def extract_flag(html: str) -> str:
 
 
 def fetch_txt_files(sess: requests.Session, secret_html: str):
-    soup = BeautifulSoup(secret_html, "html.parser")
+    soup = BeautifulSoup(secret_html, HTML_PARSER)  # POPRAWKA SONARA: użycie stałej
     hrefs = {
         a["href"]
         for a in soup.find_all("a", href=True)
