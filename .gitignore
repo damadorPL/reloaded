@@ -51,6 +51,7 @@ na_smartfona_stretched_horizontal.png
 sonar-project.properties
 sonar_issues.json
 all_issues.json
+Najpowa_niejsze_problemy_SonarQube.csv
 
 # VS Code
 .vscode/
