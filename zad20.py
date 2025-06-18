@@ -27,6 +27,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Constants for string deduplication
+RAFAL_NAME = "Rafał"
+PUNCTUATION_CHARS = ".,;:!\\\"\'"
+
 # 1. Konfiguracja i wykrywanie silnika
 load_dotenv(override=True)
 
@@ -136,74 +140,91 @@ class PipelineState(TypedDict, total=False):
 def call_llm(prompt: str, temperature: float = 0) -> str:
     """Uniwersalna funkcja wywołania LLM z optymalnymi ustawieniami"""
     if ENGINE == "openai":
-        from openai import OpenAI
-
-        client = OpenAI(
-            api_key=os.getenv("OPENAI_API_KEY"),
-            base_url=os.getenv("OPENAI_API_URL") or None,
-        )
-        resp = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            max_tokens=2000,
-        )
-        return resp.choices[0].message.content.strip()
-
+        return call_openai_llm(prompt, temperature)
     elif ENGINE == "claude":
-        try:
-            from anthropic import Anthropic
-        except ImportError:
-            print(
-                "❌ Musisz zainstalować anthropic: pip install anthropic",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        client = Anthropic(
-            api_key=os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
-        )
-        resp = client.messages.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            max_tokens=2000,
-        )
-        return resp.content[0].text.strip()
-
+        return call_claude_llm(prompt, temperature)
     elif ENGINE in {"lmstudio", "anything"}:
-        from openai import OpenAI
-
-        base_url = (
-            os.getenv("LMSTUDIO_API_URL", "http://localhost:1234/v1")
-            if ENGINE == "lmstudio"
-            else os.getenv("ANYTHING_API_URL", "http://localhost:1234/v1")
-        )
-        api_key = (
-            os.getenv("LMSTUDIO_API_KEY", "local")
-            if ENGINE == "lmstudio"
-            else os.getenv("ANYTHING_API_KEY", "local")
-        )
-
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        resp = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            max_tokens=2000,
-        )
-        return resp.choices[0].message.content.strip()
-
+        return call_local_llm(prompt, temperature)
     elif ENGINE == "gemini":
-        import google.generativeai as genai
+        return call_gemini_llm(prompt, temperature)
 
-        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-        model = genai.GenerativeModel(MODEL_NAME)
-        response = model.generate_content(
-            [prompt],
-            generation_config={"temperature": temperature, "max_output_tokens": 2000},
+
+def call_openai_llm(prompt: str, temperature: float) -> str:
+    """OpenAI LLM call"""
+    from openai import OpenAI
+
+    client = OpenAI(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("OPENAI_API_URL") or None,
+    )
+    resp = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+        max_tokens=2000,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def call_claude_llm(prompt: str, temperature: float) -> str:
+    """Claude LLM call"""
+    try:
+        from anthropic import Anthropic
+    except ImportError:
+        print(
+            "❌ Musisz zainstalować anthropic: pip install anthropic",
+            file=sys.stderr,
         )
-        return response.text.strip()
+        sys.exit(1)
+
+    client = Anthropic(
+        api_key=os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+    )
+    resp = client.messages.create(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+        max_tokens=2000,
+    )
+    return resp.content[0].text.strip()
+
+
+def call_local_llm(prompt: str, temperature: float) -> str:
+    """Local LLM call (LMStudio/Anything)"""
+    from openai import OpenAI
+
+    base_url = (
+        os.getenv("LMSTUDIO_API_URL", "http://localhost:1234/v1")
+        if ENGINE == "lmstudio"
+        else os.getenv("ANYTHING_API_URL", "http://localhost:1234/v1")
+    )
+    api_key = (
+        os.getenv("LMSTUDIO_API_KEY", "local")
+        if ENGINE == "lmstudio"
+        else os.getenv("ANYTHING_API_KEY", "local")
+    )
+
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    resp = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+        max_tokens=2000,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def call_gemini_llm(prompt: str, temperature: float) -> str:
+    """Gemini LLM call"""
+    import google.generativeai as genai
+
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+    model = genai.GenerativeModel(MODEL_NAME)
+    response = model.generate_content(
+        [prompt],
+        generation_config={"temperature": temperature, "max_output_tokens": 2000},
+    )
+    return response.text.strip()
 
 
 # Helper functions
@@ -240,7 +261,7 @@ def download_and_extract_zip(url: str, dest_dir: Path) -> bool:
             zf.extractall(dest_dir)
 
         zip_path.unlink()
-        logger.info(f"✅ Rozpakowano pomyślnie")
+        logger.info("✅ Rozpakowano pomyślnie")
         return True
 
     except Exception as e:
@@ -354,7 +375,7 @@ def clean_api_response(response: str) -> str:
                 if key in data:
                     return str(data[key])
         return str(data)
-    except:
+    except json.JSONDecodeError:
         pass
 
     # Look for hash-like strings (32+ hex chars)
@@ -366,17 +387,27 @@ def clean_api_response(response: str) -> str:
     return clean
 
 
-# ENHANCED ANALYTICAL FUNCTIONS with high-quality prompts
-def analyze_liar_from_conversations(conversations: List[List[str]]) -> str:
-    """Analyze conversations to identify the liar using engine-specific prompts"""
-    all_text = ""
-    for idx, conv in enumerate(conversations):
-        all_text += f"\n=== ROZMOWA {idx+1} ===\n"
-        all_text += "\n".join([str(f) for f in conv]) + "\n"
+# Helper functions for name extraction
+def extract_known_name_from_response(response: str, known_names: List[str]) -> str:
+    """Extract a known name from response text"""
+    response_lower = response.lower().strip()
+    
+    for name in known_names:
+        if name.lower() in response_lower:
+            return name
+    
+    return ""
 
-    if ENGINE == "gemini":
-        # IMPROVED GEMINI-SPECIFIC PROMPT
-        prompt = f"""Twoim zadaniem jest analiza 5 rozmów telefonicznych i znalezienie KONKRETNEJ OSOBY która kłamie (podaje fałszywe informacje).
+
+def clean_word_from_text(word: str) -> str:
+    """Clean punctuation from word"""
+    return word.strip(PUNCTUATION_CHARS)
+
+
+# ENHANCED ANALYTICAL FUNCTIONS with high-quality prompts
+def create_gemini_liar_prompt(all_text: str) -> str:
+    """Create Gemini-specific prompt for liar detection"""
+    return f"""Twoim zadaniem jest analiza 5 rozmów telefonicznych i znalezienie KONKRETNEJ OSOBY która kłamie (podaje fałszywe informacje).
 
 ROZMOWY DO ANALIZY:
 {all_text[:4000]}
@@ -422,9 +453,11 @@ Na podstawie powyższej analizy, zidentyfikuj osobę która NAJBARDZIEJ prawdopo
 Nie używaj określeń jak "agentka" - podaj konkretne IMIĘ osoby.
 
 ODPOWIEDŹ (tylko imię osoby która kłamie):"""
-    else:
-        # ORIGINAL PROMPT FOR OTHER ENGINES
-        prompt = f"""Jesteś ekspertem w analizie rozmów i wykrywaniu kłamstw. Przeanalizuj poniższe 5 rozmów telefonicznych i zidentyfikuj KONKRETNĄ OSOBĘ po imieniu, która świadomie podaje fałszywe informacje.
+
+
+def create_general_liar_prompt(all_text: str) -> str:
+    """Create general prompt for other engines"""
+    return f"""Jesteś ekspertem w analizie rozmów i wykrywaniu kłamstw. Przeanalizuj poniższe 5 rozmów telefonicznych i zidentyfikuj KONKRETNĄ OSOBĘ po imieniu, która świadomie podaje fałszywe informacje.
 
 ROZMOWY:
 {all_text[:4000]}
@@ -448,6 +481,19 @@ Przeanalizuj każdą osobę występującą w rozmowach i oceń wiarygodność je
 
 Zwróć TYLKO IMIĘ osoby która najwyraźniej i najczęściej kłamie:"""
 
+
+def analyze_liar_from_conversations(conversations: List[List[str]]) -> str:
+    """Analyze conversations to identify the liar using engine-specific prompts"""
+    all_text = ""
+    for idx, conv in enumerate(conversations):
+        all_text += f"\n=== ROZMOWA {idx+1} ===\n"
+        all_text += "\n".join([str(f) for f in conv]) + "\n"
+
+    if ENGINE == "gemini":
+        prompt = create_gemini_liar_prompt(all_text)
+    else:
+        prompt = create_general_liar_prompt(all_text)
+
     response = call_llm(prompt)
 
     if args.debug:
@@ -462,7 +508,7 @@ Zwróć TYLKO IMIĘ osoby która najwyraźniej i najczęściej kłamie:"""
 
     # Check for other known names
     known_names = [
-        "Rafał",
+        RAFAL_NAME,
         "Barbara",
         "Aleksander",
         "Andrzej",
@@ -474,14 +520,15 @@ Zwróć TYLKO IMIĘ osoby która najwyraźniej i najczęściej kłamie:"""
         "Tomasz",
     ]
 
-    for name in known_names:
-        if name.lower() in response_lower:
-            return name
+    # Use helper function for name extraction
+    found_name = extract_known_name_from_response(response, known_names)
+    if found_name:
+        return found_name
 
     # Extract any name-like word from response
     words = response.strip().split()
     for word in words:
-        clean_word = word.strip(".,;:!\"'").title()
+        clean_word = clean_word_from_text(word).title()
         if len(clean_word) > 2 and clean_word.isalpha() and clean_word in known_names:
             return clean_word
 
@@ -493,6 +540,28 @@ Zwróć TYLKO IMIĘ osoby która najwyraźniej i najczęściej kłamie:"""
             return name
 
     return ""
+
+
+def find_password_patterns(text: str) -> List[str]:
+    """Find password patterns in text"""
+    password_patterns = [
+        r'(?:hasło|password|kod)[\s:]+["\']?([A-Z0-9]+)["\']?',
+        r'["\']password["\']\s*:\s*["\']([^"\']+)["\']',
+        r'(?:użyj|use|send|wyślij).*?["\']([A-Z0-9]{8,})["\']',
+        r"\b([A-Z]{10,})\b",  # Long uppercase strings
+        r"(?:hasło|password).*?([A-Z]{8,})",
+    ]
+
+    found_passwords = []
+    for pattern in password_patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
+        for match in matches:
+            if isinstance(match, tuple):
+                match = match[0] if match else ""
+            if len(match) >= 8:
+                found_passwords.append(match.upper())
+    
+    return found_passwords
 
 
 def find_password_from_conversations(conversations: List[List[str]]) -> str:
@@ -509,22 +578,7 @@ def find_password_from_conversations(conversations: List[List[str]]) -> str:
         return "NONOMNISMORIAR"
 
     # Enhanced password patterns
-    password_patterns = [
-        r'(?:hasło|password|kod)[\s:]+["\']?([A-Z0-9]+)["\']?',
-        r'["\']password["\']\s*:\s*["\']([^"\']+)["\']',
-        r'(?:użyj|use|send|wyślij).*?["\']([A-Z0-9]{8,})["\']',
-        r"\b([A-Z]{10,})\b",  # Long uppercase strings
-        r"(?:hasło|password).*?([A-Z]{8,})",
-    ]
-
-    found_passwords = []
-    for pattern in password_patterns:
-        matches = re.findall(pattern, all_text, re.IGNORECASE | re.MULTILINE)
-        for match in matches:
-            if isinstance(match, tuple):
-                match = match[0] if match else ""
-            if len(match) >= 8:
-                found_passwords.append(match.upper())
+    found_passwords = find_password_patterns(all_text)
 
     if found_passwords:
         for pwd in found_passwords:
@@ -569,13 +623,33 @@ Zwróć TYLKO samo hasło (bez cudzysłowów ani dodatkowego tekstu):"""
     return ""
 
 
-def extract_endpoint_from_conversations_precise(
-    conversations: List[List[str]], liar: str
-) -> str:
-    """Extract API endpoint by analyzing who said what, excluding liar's URLs"""
-    url_pattern = r'https?://[^\s<>"\'\)]+(?:/[^\s<>"\'\)]*)?'
+def identify_speaker_in_line(line_text: str, current_speaker: str) -> Tuple[str, bool]:
+    """Identify speaker in a line of conversation"""
+    # Pattern 1: "- Name:" at the start
+    speaker_match = re.match(
+        r"^\s*-\s*([A-ZŁŚŻŹ][a-ząęółśżźćń]+)[\s:,]", line_text
+    )
+    if speaker_match:
+        return speaker_match.group(1), True
 
-    # Store URLs with speaker context
+    # Pattern 2: "Tu Name" or "Jestem Name"
+    intro_match = re.search(
+        r"(?:Tu|Jestem|Mówi)\s+([A-ZŁŚŻŹ][a-ząęółśżźćń]+)", line_text
+    )
+    if intro_match:
+        return intro_match.group(1), True
+
+    # Pattern 3: If line starts with name
+    name_match = re.match(r"^([A-ZŁŚŻŹ][a-ząęółśżźćń]+):\s", line_text)
+    if name_match:
+        return name_match.group(1), True
+
+    return current_speaker, False
+
+
+def extract_urls_with_speakers(conversations: List[List[str]], liar: str) -> List[Tuple[str, str, int]]:
+    """Extract URLs with speaker context, excluding liar's URLs"""
+    url_pattern = r'https?://[^\s<>"\'\)]+(?:/[^\s<>"\'\)]*)?'
     url_speakers = []  # [(url, speaker, confidence)]
 
     for conv_idx, conv in enumerate(conversations):
@@ -586,37 +660,13 @@ def extract_endpoint_from_conversations_precise(
             if not line_text:
                 continue
 
-            # Try to identify who is speaking in this line
-            speaker_identified = False
-
-            # Pattern 1: "- Name:" at the start
-            speaker_match = re.match(
-                r"^\s*-\s*([A-ZŁŚŻŹ][a-ząęółśżźćń]+)[\s:,]", line_text
-            )
-            if speaker_match:
-                current_speaker = speaker_match.group(1)
-                speaker_identified = True
-
-            # Pattern 2: "Tu Name" or "Jestem Name"
-            if not speaker_identified:
-                intro_match = re.search(
-                    r"(?:Tu|Jestem|Mówi)\s+([A-ZŁŚŻŹ][a-ząęółśżźćń]+)", line_text
-                )
-                if intro_match:
-                    current_speaker = intro_match.group(1)
-                    speaker_identified = True
-
-            # Pattern 3: If line starts with name
-            if not speaker_identified:
-                name_match = re.match(r"^([A-ZŁŚŻŹ][a-ząęółśżźćń]+):\s", line_text)
-                if name_match:
-                    current_speaker = name_match.group(1)
-                    speaker_identified = True
+            # Identify speaker
+            current_speaker, speaker_identified = identify_speaker_in_line(line_text, current_speaker)
 
             # Extract URLs from this line
             urls = re.findall(url_pattern, line_text)
             for url in urls:
-                clean_url = url.rstrip(".,;:)\"'")
+                clean_url = url.rstrip(PUNCTUATION_CHARS + ")")
                 if "rafal" in clean_url and "ag3nts" in clean_url:
                     confidence = 3 if speaker_identified else 1
                     url_speakers.append((clean_url, current_speaker, confidence))
@@ -626,13 +676,11 @@ def extract_endpoint_from_conversations_precise(
                             f"Found URL: {clean_url} from speaker: {current_speaker} (confidence: {confidence})"
                         )
 
-    # Filter out URLs from the liar and test them
-    password = find_password_from_conversations(conversations)
-    if not password:
-        logger.warning("❌ Nie znaleziono hasła, nie można przetestować URL-ów")
-        return ""
+    return url_speakers
 
-    # Test URLs not from liar first
+
+def test_trusted_urls(url_speakers: List[Tuple[str, str, int]], liar: str, password: str) -> str:
+    """Test URLs not from liar first"""
     trusted_urls = []
     for url, speaker, confidence in url_speakers:
         if speaker and speaker.lower() != liar.lower():
@@ -643,6 +691,25 @@ def extract_endpoint_from_conversations_precise(
                 if args.debug:
                     logger.info(f"✅ Working URL from {speaker}: {url}")
                 return url
+    return ""
+
+
+def extract_endpoint_from_conversations_precise(
+    conversations: List[List[str]], liar: str
+) -> str:
+    """Extract API endpoint by analyzing who said what, excluding liar's URLs"""
+    url_speakers = extract_urls_with_speakers(conversations, liar)
+    
+    # Test URLs not from liar first
+    password = find_password_from_conversations(conversations)
+    if not password:
+        logger.warning("❌ Nie znaleziono hasła, nie można przetestować URL-ów")
+        return ""
+
+    # Test trusted URLs
+    trusted_result = test_trusted_urls(url_speakers, liar, password)
+    if trusted_result:
+        return trusted_result
 
     # If no trusted URLs work, use LLM with high-quality prompt
     all_text = "\n".join(["\n".join([str(f) for f in conv]) for conv in conversations])
@@ -677,11 +744,12 @@ Przeanalizuj krok po kroku i zwróć TYLKO URL od osoby która nie jest kłamcą
         logger.info(f"LLM URL analysis response: {response}")
 
     # Extract URLs from LLM response
+    url_pattern = r'https?://[^\s<>"\'\)]+(?:/[^\s<>"\'\)]*)?'
     urls = re.findall(url_pattern, response)
 
     # Test all extracted URLs
     for url in urls:
-        clean_url = url.rstrip(".,;:)\"'")
+        clean_url = url.rstrip(PUNCTUATION_CHARS + ")")
         if "rafal" in clean_url:
             if args.debug:
                 logger.info(f"Testing LLM suggested URL: {clean_url}")
@@ -731,22 +799,18 @@ Odpowiedź (tylko jedno słowo):"""
         return "nauczyciel"
 
     # Extract the most likely nickname
+    excluded_words = {
+        "barbara", "jej", "chłopak", "partner", "chłopakiem", 
+        "aleksander", "aleksandrem"
+    }
+    
     words = response.strip().split()
     for word in words:
-        clean_word = word.strip(".,;:!\"'").lower()
+        clean_word = clean_word_from_text(word).lower()
         if (
             len(clean_word) > 2
             and clean_word.isalpha()
-            and clean_word
-            not in [
-                "barbara",
-                "jej",
-                "chłopak",
-                "partner",
-                "chłopakiem",
-                "aleksander",
-                "aleksandrem",
-            ]
+            and clean_word not in excluded_words
         ):
             return clean_word
 
@@ -775,7 +839,7 @@ INSTRUKCJA ANALIZY:
 3. Sprawdź kto do kogo się zwraca i jak się odzywają
 4. Uwzględnij kontekst i płcie (np. "agentko" = kobieta)
 
-ZNANE OSOBY: Barbara, Samuel, Aleksander, Andrzej, Rafał, Witek, Zygfryd, Tomasz, Azazel
+ZNANE OSOBY: Barbara, Samuel, Aleksander, Andrzej, {RAFAL_NAME}, Witek, Zygfryd, Tomasz, Azazel
 
 ZADANIE:
 Zidentyfikuj dwie osoby rozmawiające w tej rozmowie. Przeanalizuj krok po kroku kto mówi.
@@ -790,16 +854,10 @@ Odpowiedź TYLKO w formacie: "Imię1, Imię2":"""
 
         # Extract two names from response
         known_names = [
-            "Barbara",
-            "Samuel",
-            "Aleksander",
-            "Andrzej",
-            "Rafał",
-            "Witek",
-            "Zygfryd",
-            "Tomasz",
-            "Azazel",
+            "Barbara", "Samuel", "Aleksander", "Andrzej", RAFAL_NAME,
+            "Witek", "Zygfryd", "Tomasz", "Azazel",
         ]
+        
         found_names = []
         for name in known_names:
             if name in response and name not in found_names:
@@ -811,12 +869,12 @@ Odpowiedź TYLKO w formacie: "Imię1, Imię2":"""
             # Try to find a second name in the response
             words = response.split()
             for word in words:
-                clean_word = word.strip(".,;:!\"'")
+                clean_word = clean_word_from_text(word).title()
                 if (
-                    clean_word.title() in known_names
-                    and clean_word.title() not in found_names
+                    clean_word in known_names
+                    and clean_word not in found_names
                 ):
-                    found_names.append(clean_word.title())
+                    found_names.append(clean_word)
                     break
 
             if len(found_names) >= 2:
@@ -865,7 +923,7 @@ INSTRUKCJA ANALIZY:
 3. Nawet jeśli bezpośrednio nie ma informacji o API w rozmowach, kontekst wskazuje na Aleksandra
 4. Uciekinier-programista = idealna osoba dla tego scenariusza
 
-ZNANE OSOBY: Aleksander, Andrzej, Samuel, Rafał, Barbara, Witek, Zygfryd
+ZNANE OSOBY: Aleksander, Andrzej, Samuel, {RAFAL_NAME}, Barbara, Witek, Zygfryd
 
 Na podstawie kontekstu i logiki, kto najprawdopodobniej ma dostęp do API ale nie hasło?
 
@@ -882,13 +940,8 @@ TYLKO IMIĘ OSOBY:"""
 
     # Extract name from response
     known_names = [
-        "Aleksander",
-        "Andrzej",
-        "Rafał",
-        "Barbara",
-        "Zygfryd",
-        "Witek",
-        "Samuel",
+        "Aleksander", "Andrzej", RAFAL_NAME, "Barbara", 
+        "Zygfryd", "Witek", "Samuel",
     ]
 
     for name in known_names:
@@ -898,7 +951,7 @@ TYLKO IMIĘ OSOBY:"""
     # Extract any name from response as fallback
     words = response.strip().split()
     for word in words:
-        clean_word = word.strip(".,;:!\"'").title()
+        clean_word = clean_word_from_text(word).title()
         if clean_word in known_names:
             return clean_word
 
@@ -928,6 +981,66 @@ def setup_data_node(state: PipelineState) -> PipelineState:
     return state
 
 
+def load_sorted_conversations(sorted_data: Dict[str, Any]) -> List[List[str]]:
+    """Load conversations from sorted data"""
+    conversations = []
+    for i in range(1, 6):
+        key = f"rozmowa{i}"
+        if key in sorted_data:
+            conv_data = sorted_data[key]
+            if isinstance(conv_data, list):
+                conversations.append(conv_data)
+            else:
+                conversations.append([str(conv_data)])
+
+            if args.debug:
+                logger.info(f"Rozmowa {i}: {len(conversations[-1])} elementów")
+                if conversations[-1]:
+                    logger.info(
+                        f"   Sample: {str(conversations[-1][0])[:100]}..."
+                    )
+    return conversations
+
+
+def extract_text_content(data: Dict[str, Any]) -> List[str]:
+    """Extract text content from raw data"""
+    all_text_content = []
+
+    for key, value in data.items():
+        if key != "nagrania":
+            if isinstance(value, str):
+                all_text_content.append(value)
+            elif isinstance(value, dict):
+                for sub_key, sub_value in value.items():
+                    if isinstance(sub_value, str) and len(sub_value) > 50:
+                        all_text_content.append(sub_value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, str) and len(item) > 50:
+                        all_text_content.append(item)
+
+    return all_text_content
+
+
+def split_into_conversations(all_text_content: List[str]) -> List[List[str]]:
+    """Split text content into 5 conversations"""
+    conversations = []
+    if all_text_content:
+        chunk_size = max(1, len(all_text_content) // 5)
+
+        for i in range(5):
+            start_idx = i * chunk_size
+            end_idx = (i + 1) * chunk_size if i < 4 else len(all_text_content)
+            conv = all_text_content[start_idx:end_idx]
+            conversations.append(conv if conv else [])
+
+    # Ensure we have 5 conversations
+    while len(conversations) < 5:
+        conversations.append([])
+
+    return conversations
+
+
 def fetch_data_node(state: PipelineState) -> PipelineState:
     """Pobiera dane transkrypcji rozmów"""
     logger.info("📥 Pobieram transkrypcje rozmów...")
@@ -940,22 +1053,7 @@ def fetch_data_node(state: PipelineState) -> PipelineState:
             if args.debug:
                 logger.info(f"Sorted data keys: {list(sorted_data.keys())}")
 
-            conversations = []
-            for i in range(1, 6):
-                key = f"rozmowa{i}"
-                if key in sorted_data:
-                    conv_data = sorted_data[key]
-                    if isinstance(conv_data, list):
-                        conversations.append(conv_data)
-                    else:
-                        conversations.append([str(conv_data)])
-
-                    if args.debug:
-                        logger.info(f"Rozmowa {i}: {len(conversations[-1])} elementów")
-                        if conversations[-1]:
-                            logger.info(
-                                f"   Sample: {str(conversations[-1][0])[:100]}..."
-                            )
+            conversations = load_sorted_conversations(sorted_data)
 
             if conversations and any(len(conv) > 0 for conv in conversations):
                 state["conversations"] = conversations
@@ -978,39 +1076,12 @@ def fetch_data_node(state: PipelineState) -> PipelineState:
     state["raw_data"] = data
 
     # Enhanced conversation extraction
-    conversations = []
-    all_text_content = []
-
-    for key, value in data.items():
-        if key != "nagrania":
-            if isinstance(value, str):
-                all_text_content.append(value)
-            elif isinstance(value, dict):
-                for sub_key, sub_value in value.items():
-                    if isinstance(sub_value, str) and len(sub_value) > 50:
-                        all_text_content.append(sub_value)
-            elif isinstance(value, list):
-                for item in value:
-                    if isinstance(item, str) and len(item) > 50:
-                        all_text_content.append(item)
-
+    all_text_content = extract_text_content(data)
+    
     if args.debug:
         logger.info(f"Extracted {len(all_text_content)} text fragments")
 
-    # Split into 5 conversations using content analysis
-    if all_text_content:
-        conversations = []
-        chunk_size = max(1, len(all_text_content) // 5)
-
-        for i in range(5):
-            start_idx = i * chunk_size
-            end_idx = (i + 1) * chunk_size if i < 4 else len(all_text_content)
-            conv = all_text_content[start_idx:end_idx]
-            conversations.append(conv if conv else [])
-
-    # Ensure we have 5 conversations
-    while len(conversations) < 5:
-        conversations.append([])
+    conversations = split_into_conversations(all_text_content)
 
     # Create metadata
     metadata = {}
@@ -1042,7 +1113,7 @@ def identify_speakers_node(state: PipelineState) -> PipelineState:
     # Basic speaker identification
     speakers = defaultdict(set)
     known_names = [
-        "Rafał",
+        RAFAL_NAME,
         "Barbara",
         "Aleksander",
         "Andrzej",
@@ -1203,7 +1274,7 @@ def send_answers_node(state: PipelineState) -> PipelineState:
 
     payload = {"task": "phone", "apikey": CENTRALA_API_KEY, "answer": valid_answers}
 
-    logger.info(f"📤 Wysyłam odpowiedzi...")
+    logger.info("📤 Wysyłam odpowiedzi...")
     if args.debug:
         logger.info(f"Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}")
 
@@ -1275,12 +1346,12 @@ def main() -> None:
         result: PipelineState = graph.invoke({})
 
         if result.get("result"):
-            print(f"\n🎉 Zadanie zakończone pomyślnie!")
+            print("\n🎉 Zadanie zakończone pomyślnie!")
 
             if result.get("identified_liar"):
                 print(f"🎭 Zidentyfikowany kłamca: {result['identified_liar']}")
 
-            print(f"\n📊 Finalne odpowiedzi:")
+            print("\n📊 Finalne odpowiedzi:")
             answers = result.get("answers", {})
             for q_id, answer in sorted(answers.items()):
                 status = "✅" if answer else "❌"
