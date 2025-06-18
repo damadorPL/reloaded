@@ -32,6 +32,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Constants for string deduplication
+IMAGE_PNG_MIME = "image/png"
+LOCALHOST_API_URL = "http://localhost:1234/v1"
+
 # 1. Konfiguracja i wykrywanie silnika
 load_dotenv(override=True)
 
@@ -265,13 +269,9 @@ def image_to_base64(image_path: Path, format: str = "PNG") -> str:
             return base64.b64encode(f.read()).decode("utf-8")
 
 
-def ocr_image(
-    image_path: Path, image_base64: Optional[str] = None, attempt: int = 1
-) -> str:
-    """Wykonuje OCR na obrazie używając vision model"""
-
-    # Różne prompty dla różnych prób
-    prompts = [
+def get_ocr_prompts() -> List[str]:
+    """Returns list of OCR prompts for different attempts"""
+    return [
         # Pierwsza próba - neutralny prompt
         """Please describe what you see in this image. Focus on any text content, handwritten notes, or printed text. 
 If there are Polish words, transcribe them exactly as written.
@@ -294,256 +294,267 @@ any place names, city names, or geographical references you can see. The text ma
 in Polish. Look especially for names starting with 'L'.""",
     ]
 
+
+def ocr_with_openai(prompt: str, image_base64: str, attempt: int) -> str:
+    """OCR using OpenAI Vision API"""
+    from openai import OpenAI
+
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+    # Spróbuj JPEG zamiast PNG dla OpenAI przy kolejnych próbach
+    if attempt > 2:
+        media_type = "image/jpeg"
+    else:
+        media_type = IMAGE_PNG_MIME
+
+    image_url = f"data:{media_type};base64,{image_base64}"
+
+    response = client.chat.completions.create(
+        model=VISION_MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            }
+        ],
+        max_tokens=1000,
+        temperature=0,
+    )
+    return response.choices[0].message.content.strip()
+
+
+def ocr_with_claude(prompt: str, image_base64: str) -> str:
+    """OCR using Claude Vision API"""
+    try:
+        from anthropic import Anthropic
+    except ImportError:
+        print(
+            "❌ Musisz zainstalować anthropic: pip install anthropic",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    client = Anthropic(
+        api_key=os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+    )
+
+    response = client.messages.create(
+        model=VISION_MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": IMAGE_PNG_MIME,
+                            "data": image_base64,
+                        },
+                    },
+                ],
+            }
+        ],
+        max_tokens=1000,
+        temperature=0,
+    )
+    return response.content[0].text.strip()
+
+
+def ocr_with_gemini(prompt: str, image_base64: str) -> str:
+    """OCR using Gemini Vision API"""
+    import google.generativeai as genai
+
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+    model = genai.GenerativeModel(VISION_MODEL)
+
+    image_bytes = base64.b64decode(image_base64)
+    response = model.generate_content(
+        [prompt, {"mime_type": IMAGE_PNG_MIME, "data": image_bytes}]
+    )
+    return response.text.strip()
+
+
+def ocr_with_local_api(prompt: str, image_base64: str) -> str:
+    """OCR using local API (LMStudio/Anything)"""
+    from openai import OpenAI
+
+    base_url = (
+        os.getenv("LMSTUDIO_API_URL", LOCALHOST_API_URL)
+        if ENGINE == "lmstudio"
+        else os.getenv("ANYTHING_API_URL", LOCALHOST_API_URL)
+    )
+    api_key = (
+        os.getenv("LMSTUDIO_API_KEY", "local")
+        if ENGINE == "lmstudio"
+        else os.getenv("ANYTHING_API_KEY", "local")
+    )
+
+    client = OpenAI(api_key=api_key, base_url=base_url)
+
+    response = client.chat.completions.create(
+        model=VISION_MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{IMAGE_PNG_MIME};base64,{image_base64}"
+                        },
+                    },
+                ],
+            }
+        ],
+        max_tokens=1000,
+        temperature=0,
+    )
+    return response.choices[0].message.content.strip()
+
+
+def ocr_image(
+    image_path: Path, image_base64: Optional[str] = None, attempt: int = 1
+) -> str:
+    """Wykonuje OCR na obrazie używając vision model"""
+    prompts = get_ocr_prompts()
     prompt = prompts[min(attempt - 1, len(prompts) - 1)]
 
     if ENGINE == "openai":
-        from openai import OpenAI
-
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
         # Spróbuj JPEG zamiast PNG dla OpenAI przy kolejnych próbach
         if attempt > 2:
             image_base64 = image_to_base64(image_path, format="JPEG")
-            media_type = "image/jpeg"
         else:
             image_base64 = image_base64 or image_to_base64(image_path)
-            media_type = "image/png"
-
-        image_url = f"data:{media_type};base64,{image_base64}"
-
-        response = client.chat.completions.create(
-            model=VISION_MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": image_url}},
-                    ],
-                }
-            ],
-            max_tokens=1000,
-            temperature=0,
-        )
-        return response.choices[0].message.content.strip()
+        return ocr_with_openai(prompt, image_base64, attempt)
 
     elif ENGINE == "claude":
-        try:
-            from anthropic import Anthropic
-        except ImportError:
-            print(
-                "❌ Musisz zainstalować anthropic: pip install anthropic",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
         if not image_base64:
             image_base64 = image_to_base64(image_path)
-
-        client = Anthropic(
-            api_key=os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
-        )
-
-        response = client.messages.create(
-            model=VISION_MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": image_base64,
-                            },
-                        },
-                    ],
-                }
-            ],
-            max_tokens=1000,
-            temperature=0,
-        )
-        return response.content[0].text.strip()
+        return ocr_with_claude(prompt, image_base64)
 
     elif ENGINE == "gemini":
-        import google.generativeai as genai
-
-        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-
         if not image_base64:
             image_base64 = image_to_base64(image_path)
-
-        model = genai.GenerativeModel(VISION_MODEL)
-
-        import base64
-
-        image_bytes = base64.b64decode(image_base64)
-
-        response = model.generate_content(
-            [prompt, {"mime_type": "image/png", "data": image_bytes}]
-        )
-        return response.text.strip()
+        return ocr_with_gemini(prompt, image_base64)
 
     else:  # lmstudio, anything
-        from openai import OpenAI
-
-        base_url = (
-            os.getenv("LMSTUDIO_API_URL", "http://localhost:1234/v1")
-            if ENGINE == "lmstudio"
-            else os.getenv("ANYTHING_API_URL", "http://localhost:1234/v1")
-        )
-        api_key = (
-            os.getenv("LMSTUDIO_API_KEY", "local")
-            if ENGINE == "lmstudio"
-            else os.getenv("ANYTHING_API_KEY", "local")
-        )
-
-        client = OpenAI(api_key=api_key, base_url=base_url)
-
         if not image_base64:
             image_base64 = image_to_base64(image_path)
+        return ocr_with_local_api(prompt, image_base64)
 
-        response = client.chat.completions.create(
-            model=VISION_MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{image_base64}"
-                            },
-                        },
-                    ],
-                }
-            ],
-            max_tokens=1000,
-            temperature=0,
+
+def call_openai_llm(prompt: str, temperature: float) -> str:
+    """Call OpenAI LLM"""
+    from openai import OpenAI
+
+    client = OpenAI(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("OPENAI_API_URL") or None,
+    )
+    resp = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+        max_tokens=500,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def call_claude_llm(prompt: str, temperature: float) -> str:
+    """Call Claude LLM"""
+    try:
+        from anthropic import Anthropic
+    except ImportError:
+        print(
+            "❌ Musisz zainstalować anthropic: pip install anthropic",
+            file=sys.stderr,
         )
-        return response.choices[0].message.content.strip()
+        sys.exit(1)
+
+    client = Anthropic(
+        api_key=os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+    )
+    resp = client.messages.create(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+        max_tokens=1000,
+    )
+    return resp.content[0].text.strip()
+
+
+def call_local_llm(prompt: str, temperature: float) -> str:
+    """Call local LLM (LMStudio/Anything)"""
+    from openai import OpenAI
+
+    base_url = (
+        os.getenv("LMSTUDIO_API_URL", LOCALHOST_API_URL)
+        if ENGINE == "lmstudio"
+        else os.getenv("ANYTHING_API_URL", LOCALHOST_API_URL)
+    )
+    api_key = (
+        os.getenv("LMSTUDIO_API_KEY", "local")
+        if ENGINE == "lmstudio"
+        else os.getenv("ANYTHING_API_KEY", "local")
+    )
+
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    resp = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+        max_tokens=1000,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def call_gemini_llm(prompt: str, temperature: float) -> str:
+    """Call Gemini LLM"""
+    import google.generativeai as genai
+
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+    model = genai.GenerativeModel(MODEL_NAME)
+    response = model.generate_content(
+        [prompt],
+        generation_config={"temperature": temperature, "max_output_tokens": 500},
+    )
+    return response.text.strip()
 
 
 def call_llm(prompt: str, temperature: float = 0) -> str:
     """Uniwersalna funkcja wywołania LLM"""
-
     if ENGINE == "openai":
-        from openai import OpenAI
-
-        client = OpenAI(
-            api_key=os.getenv("OPENAI_API_KEY"),
-            base_url=os.getenv("OPENAI_API_URL") or None,
-        )
-        resp = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            max_tokens=500,
-        )
-        return resp.choices[0].message.content.strip()
-
+        return call_openai_llm(prompt, temperature)
     elif ENGINE == "claude":
-        try:
-            from anthropic import Anthropic
-        except ImportError:
-            print(
-                "❌ Musisz zainstalować anthropic: pip install anthropic",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        client = Anthropic(
-            api_key=os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
-        )
-        resp = client.messages.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            max_tokens=1000,
-        )
-        return resp.content[0].text.strip()
-
+        return call_claude_llm(prompt, temperature)
     elif ENGINE in {"lmstudio", "anything"}:
-        from openai import OpenAI
-
-        base_url = (
-            os.getenv("LMSTUDIO_API_URL", "http://localhost:1234/v1")
-            if ENGINE == "lmstudio"
-            else os.getenv("ANYTHING_API_URL", "http://localhost:1234/v1")
-        )
-        api_key = (
-            os.getenv("LMSTUDIO_API_KEY", "local")
-            if ENGINE == "lmstudio"
-            else os.getenv("ANYTHING_API_KEY", "local")
-        )
-
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        resp = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            max_tokens=1000,
-        )
-        return resp.choices[0].message.content.strip()
-
+        return call_local_llm(prompt, temperature)
     elif ENGINE == "gemini":
-        import google.generativeai as genai
-
-        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-        model = genai.GenerativeModel(MODEL_NAME)
-        response = model.generate_content(
-            [prompt],
-            generation_config={"temperature": temperature, "max_output_tokens": 500},
-        )
-        return response.text.strip()
+        return call_gemini_llm(prompt, temperature)
 
 
-def answer_questions(
-    content: str, questions: Dict[str, str], hints: Dict[str, str]
-) -> Dict[str, str]:
-    """Odpowiada na pytania używając LLM"""
-    answers = {}
-
-    for q_id, question in questions.items():
-        logger.info(f"📝 Odpowiadam na pytanie {q_id}: {question}")
-
-        # HARDCODED odpowiedzi na podstawie analizy
-        if q_id == "04":
-            answer = "2024-11-12"
-            logger.info(f"   ✅ Odpowiedź (hardcoded): {answer}")
-            answers[q_id] = answer
-            continue
-        elif q_id == "05" and ENGINE == "gemini":
-            # Gemini źle odczytuje nazwę miasta
-            answer = "Lubawa"
-            logger.info(f"   ✅ Odpowiedź (hardcoded dla Gemini): {answer}")
-            answers[q_id] = answer
-            continue
-
-        hint = hints.get(q_id, "")
-        hint_info = f"\n\nWskazówka od centrali: {hint}" if hint else ""
-        special_instructions = ""
-
-        if q_id == "01":
-            special_instructions = """
+def get_special_instructions(q_id: str) -> str:
+    """Get special instructions for specific questions"""
+    instructions = {
+        "01": """
 - Odpowiedź nie jest podana wprost. Oblicz, do którego roku Rafał musiał się przenieść, aby być świadkiem powstania modelu GPT-2 i rozpocząć pracę nad LLM przed jego powstaniem.
 - GPT-2 został publicznie wydany w lutym 2019 roku. Adam wybrał rok, w którym miały się zacząć prace nad LLM, czyli rok 2019.
-- Odpowiedź to czterocyfrowy rok."""
-        elif q_id == "02":
-            special_instructions = """
+- Odpowiedź to czterocyfrowy rok.""",
+        "02": """
 - Szukaj imienia osoby która wpadła na pomysł podróży w czasie
-- To będzie pojedyncze imię, prawdopodobnie męskie"""
-        elif q_id == "03":
-            special_instructions = """
+- To będzie pojedyncze imię, prawdopodobnie męskie""",
+        "03": """
 - Szukaj miejsca schronienia Rafała. Odpowiedź to jedno słowo.
 - NIE podawaj lokalizacji, tylko typ miejsca (jaskinia).
 - Odpowiedź musi być jednym słowem.
-"""
-        elif q_id == "05":
-            special_instructions = """
+""",
+        "05": """
 Strona 19 notatnika zawiera bardzo nieczytelny tekst, OCR zwrócił tylko fragmenty liter.
 
 Wiadomo, że szukana nazwa miejscowości:
@@ -554,7 +565,46 @@ Wiadomo, że szukana nazwa miejscowości:
 
 Podaj najbardziej prawdopodobną nazwę tej miejscowości (tylko nazwę, bez wyjaśnień).
 """
-        prompt = f"""Analizuję notatnik Rafała i odpowiadam na pytanie.
+    }
+    return instructions.get(q_id, "")
+
+
+def clean_answer(q_id: str, answer: str) -> str:
+    """Clean and format answer based on question type"""
+    if q_id == "01":
+        year_match = re.search(r"\b(19\d{2}|20\d{2})\b", answer)
+        if year_match:
+            answer = year_match.group()
+    elif q_id == "03":
+        answer = re.sub(r"^w\s+", "", answer, flags=re.IGNORECASE)
+        answer = answer.split()[0] if answer else answer
+        answer = answer.lower()
+
+    answer = answer.rstrip(".").strip('"').strip("'")
+    return answer
+
+
+def answer_single_question(
+    q_id: str, question: str, content: str, hint: str
+) -> str:
+    """Answer a single question"""
+    logger.info(f"📝 Odpowiadam na pytanie {q_id}: {question}")
+
+    # HARDCODED odpowiedzi na podstawie analizy
+    if q_id == "04":
+        answer = "2024-11-12"
+        logger.info(f"   ✅ Odpowiedź (hardcoded): {answer}")
+        return answer
+    elif q_id == "05" and ENGINE == "gemini":
+        # Gemini źle odczytuje nazwę miasta
+        answer = "Lubawa"
+        logger.info(f"   ✅ Odpowiedź (hardcoded dla Gemini): {answer}")
+        return answer
+
+    hint_info = f"\n\nWskazówka od centrali: {hint}" if hint else ""
+    special_instructions = get_special_instructions(q_id)
+
+    prompt = f"""Analizuję notatnik Rafała i odpowiadam na pytanie.
 
 NOTATNIK:
 {content}
@@ -572,22 +622,25 @@ ZASADY ODPOWIEDZI:
 
 Odpowiedź:"""
 
-        answer = call_llm(prompt, temperature=0.1)
-        answer = answer.strip()
+    answer = call_llm(prompt, temperature=0.1)
+    answer = answer.strip()
 
-        # Czyszczenie odpowiedzi
-        if q_id == "01":
-            year_match = re.search(r"\b(19\d{2}|20\d{2})\b", answer)
-            if year_match:
-                answer = year_match.group()
-        elif q_id == "03":
-            answer = re.sub(r"^w\s+", "", answer, flags=re.IGNORECASE)
-            answer = answer.split()[0] if answer else answer
-            answer = answer.lower()
+    # Czyszczenie odpowiedzi
+    answer = clean_answer(q_id, answer)
+    
+    logger.info(f"   ✅ Odpowiedź: {answer}")
+    return answer
 
-        answer = answer.rstrip(".").strip('"').strip("'")
-        answers[q_id] = answer
-        logger.info(f"   ✅ Odpowiedź: {answer}")
+
+def answer_questions(
+    content: str, questions: Dict[str, str], hints: Dict[str, str]
+) -> Dict[str, str]:
+    """Odpowiada na pytania używając LLM"""
+    answers = {}
+
+    for q_id, question in questions.items():
+        hint = hints.get(q_id, "")
+        answers[q_id] = answer_single_question(q_id, question, content, hint)
 
     return answers
 
@@ -627,6 +680,56 @@ def extract_content_node(state: PipelineState) -> PipelineState:
     return state
 
 
+def perform_ocr_attempts(page19_image_path: Path) -> str:
+    """Perform multiple OCR attempts with different prompts"""
+    page19_text = ""
+    max_attempts = 4 if ENGINE == "openai" else 1  # Więcej prób dla OpenAI
+
+    for attempt in range(1, max_attempts + 1):
+        if attempt > 1:
+            logger.info(f"🔄 Próba {attempt}/{max_attempts}...")
+
+        page19_text = ocr_image(page19_image_path, attempt=attempt)
+
+        # Sprawdź czy OCR się udał
+        if (
+            len(page19_text) > 50
+            and "can't assist" not in page19_text.lower()
+            and "cannot assist" not in page19_text.lower()
+        ):
+            logger.info(f"✅ OCR udany w próbie {attempt}")
+            break
+        else:
+            logger.warning(f"⚠️  Próba {attempt} nieudana: {page19_text[:100]}")
+
+    return page19_text
+
+
+def try_fallback_ocr(page19_image_path: Path, page19_text: str) -> str:
+    """Try fallback OCR methods if main OCR failed"""
+    # Jeśli wszystkie próby vision model zawiodły, spróbuj Tesseract
+    if (
+        len(page19_text) < 50
+        or "can't" in page19_text.lower()
+        or "cannot" in page19_text.lower()
+    ):
+        tesseract_text = try_tesseract_ocr(page19_image_path)
+        if tesseract_text and len(tesseract_text) > len(page19_text):
+            logger.info("✅ Tesseract OCR dał lepsze wyniki")
+            return tesseract_text
+        else:
+            logger.warning("⚠️  OCR nie powiódł się w pełni")
+            logger.info(
+                "💡 Wskazówka: Strona 19 zawiera nazwę miejscowości koło Grudziądza"
+            )
+            logger.info(
+                "💡 Możesz ręcznie podać tekst używając: --page19-text 'treść strony'"
+            )
+            logger.info("💡 Lub użyj wyższej rozdzielczości: --high-res")
+
+    return page19_text
+
+
 def ocr_page19_node(state: PipelineState) -> PipelineState:
     """Wykonuje OCR na stronie 19"""
     page19_image_path = state.get("page19_image_path")
@@ -643,45 +746,10 @@ def ocr_page19_node(state: PipelineState) -> PipelineState:
         logger.info("🔍 Wykonuję OCR na stronie 19...")
 
         # Próbuj OCR wielokrotnie z różnymi promptami
-        page19_text = ""
-        max_attempts = 4 if ENGINE == "openai" else 1  # Więcej prób dla OpenAI
-
-        for attempt in range(1, max_attempts + 1):
-            if attempt > 1:
-                logger.info(f"🔄 Próba {attempt}/{max_attempts}...")
-
-            page19_text = ocr_image(page19_image_path, attempt=attempt)
-
-            # Sprawdź czy OCR się udał
-            if (
-                len(page19_text) > 50
-                and "can't assist" not in page19_text.lower()
-                and "cannot assist" not in page19_text.lower()
-            ):
-                logger.info(f"✅ OCR udany w próbie {attempt}")
-                break
-            else:
-                logger.warning(f"⚠️  Próba {attempt} nieudana: {page19_text[:100]}")
-
-        # Jeśli wszystkie próby vision model zawiodły, spróbuj Tesseract
-        if (
-            len(page19_text) < 50
-            or "can't" in page19_text.lower()
-            or "cannot" in page19_text.lower()
-        ):
-            tesseract_text = try_tesseract_ocr(page19_image_path)
-            if tesseract_text and len(tesseract_text) > len(page19_text):
-                logger.info("✅ Tesseract OCR dał lepsze wyniki")
-                page19_text = tesseract_text
-            else:
-                logger.warning("⚠️  OCR nie powiódł się w pełni")
-                logger.info(
-                    "💡 Wskazówka: Strona 19 zawiera nazwę miejscowości koło Grudziądza"
-                )
-                logger.info(
-                    "💡 Możesz ręcznie podać tekst używając: --page19-text 'treść strony'"
-                )
-                logger.info("💡 Lub użyj wyższej rozdzielczości: --high-res")
+        page19_text = perform_ocr_attempts(page19_image_path)
+        
+        # Try fallback OCR if needed
+        page19_text = try_fallback_ocr(page19_image_path, page19_text)
 
     logger.info(f"📄 Tekst ze strony 19 (pierwsze 500 znaków):\n{page19_text[:500]}...")
 
@@ -698,7 +766,7 @@ def fetch_questions_node(state: PipelineState) -> PipelineState:
     """Pobiera pytania z API"""
     questions_url: str = os.getenv("NOTES_RAFAL")
 
-    logger.info(f"📥 Pobieranie pytań...")
+    logger.info("📥 Pobieranie pytań...")
 
     try:
         response = requests.get(questions_url)
@@ -742,6 +810,36 @@ def answer_questions_node(state: PipelineState) -> PipelineState:
     return state
 
 
+def process_error_response(response, state: PipelineState) -> None:
+    """Process error response and extract hints"""
+    try:
+        error_data = response.json()
+        logger.error(f"Error JSON: {error_data}")
+
+        # Może być hint w błędzie
+        if "hint" in error_data:
+            hints = error_data.get("hint", {})
+            # Jeśli hint jest stringiem, przypisz do konkretnego pytania
+            if isinstance(hints, str):
+                # Z debug wiemy które pytanie jest błędne
+                if "question 05" in error_data.get("message", ""):
+                    state["hints"]["05"] = hints
+                else:
+                    # Rozpropaguj na wszystkie
+                    for q_id in state.get("questions", {}):
+                        state["hints"][q_id] = hints
+            elif isinstance(hints, dict):
+                state["hints"] = hints
+
+            state["iteration"] = state.get("iteration", 0) + 1
+            logger.info(
+                "💡 Znaleziono hinty w odpowiedzi błędu, próbuję ponownie..."
+            )
+
+    except json.JSONDecodeError:
+        pass
+
+
 def send_answers_node(state: PipelineState) -> PipelineState:
     """Wysyła odpowiedzi do centrali"""
     answers = state.get("answers", {})
@@ -752,7 +850,7 @@ def send_answers_node(state: PipelineState) -> PipelineState:
 
     payload = {"task": "notes", "apikey": CENTRALA_API_KEY, "answer": answers}
 
-    logger.info(f"📤 Wysyłam odpowiedzi...")
+    logger.info("📤 Wysyłam odpowiedzi...")
     logger.info(f"Payload: {json.dumps(payload, indent=2, ensure_ascii=False)}")
 
     try:
@@ -777,7 +875,7 @@ def send_answers_node(state: PipelineState) -> PipelineState:
                 print(f"🏁 {result}")
         else:
             # Prawdopodobnie są błędne odpowiedzi
-            logger.warning(f"⚠️  Niektóre odpowiedzi są błędne")
+            logger.warning("⚠️  Niektóre odpowiedzi są błędne")
 
             # Zapisz hinty jeśli są
             if "hint" in result:
@@ -800,33 +898,8 @@ def send_answers_node(state: PipelineState) -> PipelineState:
         logger.error(f"❌ Błąd HTTP {e.response.status_code}: {e}")
         logger.error(f"Szczegóły: {e.response.text}")
 
-        # Spróbuj sparsować błąd jako JSON
-        try:
-            error_data = e.response.json()
-            logger.error(f"Error JSON: {error_data}")
-
-            # Może być hint w błędzie
-            if "hint" in error_data:
-                hints = error_data.get("hint", {})
-                # Jeśli hint jest stringiem, przypisz do konkretnego pytania
-                if isinstance(hints, str):
-                    # Z debug wiemy które pytanie jest błędne
-                    if "question 05" in error_data.get("message", ""):
-                        state["hints"]["05"] = hints
-                    else:
-                        # Rozpropaguj na wszystkie
-                        for q_id in state.get("questions", {}):
-                            state["hints"][q_id] = hints
-                elif isinstance(hints, dict):
-                    state["hints"] = hints
-
-                state["iteration"] = state.get("iteration", 0) + 1
-                logger.info(
-                    "💡 Znaleziono hinty w odpowiedzi błędu, próbuję ponownie..."
-                )
-
-        except json.JSONDecodeError:
-            pass
+        # Process error response for hints
+        process_error_response(e.response, state)
 
     except Exception as e:
         logger.error(f"❌ Błąd wysyłania: {e}")
@@ -894,9 +967,9 @@ def main() -> None:
     print(f"📷 Vision Model: {VISION_MODEL}")
 
     if args.page19_text:
-        print(f"📝 Ręczny tekst strony 19: TAK")
+        print("📝 Ręczny tekst strony 19: TAK")
     if args.high_res:
-        print(f"🔍 Wysoka rozdzielczość: TAK")
+        print("🔍 Wysoka rozdzielczość: TAK")
 
     print("\nStartuje pipeline...\n")
 
@@ -905,8 +978,8 @@ def main() -> None:
         result: PipelineState = graph.invoke({})
 
         if result.get("result"):
-            print(f"\n🎉 Zadanie zakończone!")
-            print(f"\n📊 Finalne odpowiedzi:")
+            print("\n🎉 Zadanie zakończone!")
+            print("\n📊 Finalne odpowiedzi:")
             answers = result.get("answers", {})
             for q_id, answer in sorted(answers.items()):
                 print(f"   {q_id}: {answer}")
@@ -915,7 +988,7 @@ def main() -> None:
 
             # Pokaż ostatnie odpowiedzi
             if result.get("answers"):
-                print(f"\n📊 Ostatnie odpowiedzi:")
+                print("\n📊 Ostatnie odpowiedzi:")
                 for q_id, answer in sorted(result["answers"].items()):
                     print(f"   {q_id}: {answer}")
 
