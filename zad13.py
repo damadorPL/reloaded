@@ -18,6 +18,14 @@ import requests
 from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 
+# Constants to avoid string duplication (S1192)
+DEFAULT_LMSTUDIO_URL = "http://localhost:1234/v1"
+DEFAULT_API_KEY_LOCAL = "local"
+CONTENT_TYPE_JSON = "application/json"
+API_KEY_HIDDEN = "***HIDDEN***"
+ERROR_ANTHROPIC_MISSING = "❌ Musisz zainstalować anthropic: pip install anthropic"
+DEFAULT_MAX_TOKENS = 1000
+
 # Konfiguracja loggera
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -133,7 +141,7 @@ try:
     nlp = spacy.load("pl_core_news_lg")
     USE_SPACY = True
     logger.info("SpaCy załadowane pomyślnie")
-except Exception as e:
+except (ImportError, OSError) as e:
     logger.warning(f"Nie można załadować spaCy: {e}")
     USE_SPACY = False
 
@@ -160,10 +168,7 @@ def call_llm(prompt: str, temperature: float = 0) -> str:
         try:
             from anthropic import Anthropic
         except ImportError:
-            print(
-                "❌ Musisz zainstalować anthropic: pip install anthropic",
-                file=sys.stderr,
-            )
+            print(ERROR_ANTHROPIC_MISSING, file=sys.stderr)
             sys.exit(1)
 
         client = Anthropic(
@@ -173,7 +178,7 @@ def call_llm(prompt: str, temperature: float = 0) -> str:
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
-            max_tokens=1000,
+            max_tokens=DEFAULT_MAX_TOKENS,
         )
         return resp.content[0].text.strip()
 
@@ -181,14 +186,14 @@ def call_llm(prompt: str, temperature: float = 0) -> str:
         from openai import OpenAI
 
         base_url = (
-            os.getenv("LMSTUDIO_API_URL", "http://localhost:1234/v1")
+            os.getenv("LMSTUDIO_API_URL", DEFAULT_LMSTUDIO_URL)
             if ENGINE == "lmstudio"
-            else os.getenv("ANYTHING_API_URL", "http://localhost:1234/v1")
+            else os.getenv("ANYTHING_API_URL", DEFAULT_LMSTUDIO_URL)
         )
         api_key = (
-            os.getenv("LMSTUDIO_API_KEY", "local")
+            os.getenv("LMSTUDIO_API_KEY", DEFAULT_API_KEY_LOCAL)
             if ENGINE == "lmstudio"
-            else os.getenv("ANYTHING_API_KEY", "local")
+            else os.getenv("ANYTHING_API_KEY", DEFAULT_API_KEY_LOCAL)
         )
 
         client = OpenAI(api_key=api_key, base_url=base_url)
@@ -206,7 +211,7 @@ def call_llm(prompt: str, temperature: float = 0) -> str:
         model = genai.GenerativeModel(MODEL_NAME)
         response = model.generate_content(
             [prompt],
-            generation_config={"temperature": temperature, "max_output_tokens": 1000},
+            generation_config={"temperature": temperature, "max_output_tokens": DEFAULT_MAX_TOKENS},
         )
         return response.text.strip()
 
@@ -235,7 +240,8 @@ def normalize_query(query: str) -> str:
                 normalized = normalized_tokens[0]
             else:
                 normalized = query.upper()
-        except:
+        except (AttributeError, ValueError) as e:
+            logger.debug(f"Błąd normalizacji spaCy: {e}")
             normalized = query.upper()
     else:
         # Fallback - tylko uppercase
@@ -261,10 +267,10 @@ def query_api(url: str, query: str) -> Optional[Dict[str, Any]]:
 
     try:
         safe_payload = payload.copy()
-        safe_payload["apikey"] = "***HIDDEN***"
+        safe_payload["apikey"] = API_KEY_HIDDEN
         logger.info(f"Payload wysyłany do {url}: {safe_payload}")
 
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": CONTENT_TYPE_JSON}
         response = requests.post(url, json=payload, headers=headers)
         logger.info(f"Odpowiedź serwera dla '{query}': {response.text}")
         response.raise_for_status()
@@ -354,7 +360,7 @@ def download_note_node(state: PipelineState) -> PipelineState:
         response.raise_for_status()
         state["barbara_note"] = response.text
         logger.info("Notatka Barbary pobrana pomyślnie.")
-    except Exception as e:
+    except requests.exceptions.RequestException as e:
         logger.error(f"Błąd pobierania notatki: {e}")
         state["barbara_note"] = ""
 
@@ -391,8 +397,72 @@ def extract_keywords_node(state: PipelineState) -> PipelineState:
     return state
 
 
+def _process_people_queue(people_queue: List[str], checked_people: Set[str], 
+                         places_queue: List[str], checked_places: Set[str]) -> None:
+    """Przetwarza kolejkę osób"""
+    if people_queue:
+        person = people_queue.pop(0)
+        if person not in checked_people:
+            logger.debug(f"Sprawdzam: {person}")
+            response = query_api(PEOPLE_URL, person)
+            checked_people.add(person)
+
+            if response and response.get("code") == 0:
+                message = response.get("message", "")
+                places = message.split()
+                for place in places:
+                    normalized_place = normalize_query(place)
+                    if (
+                        normalized_place not in checked_places
+                        and normalized_place not in places_queue
+                    ):
+                        places_queue.append(normalized_place)
+
+
+def _process_places_queue(places_queue: List[str], checked_places: Set[str],
+                         people_queue: List[str], checked_people: Set[str],
+                         barbara_locations: List[str], known_barbara_locations: Set[str]) -> Optional[str]:
+    """Przetwarza kolejkę miejsc"""
+    new_barbara_location = None
+    
+    if places_queue:
+        place = places_queue.pop(0)
+        if place not in checked_places:
+            logger.debug(f"Sprawdzam: {place}")
+            response = query_api(PLACES_URL, place)
+            checked_places.add(place)
+
+            if response and response.get("code") == 0:
+                message = response.get("message", "")
+                people = message.split()
+
+                # Sprawdź czy Barbara jest w tym miejscu
+                if "BARBARA" in people:
+                    logger.info(f"Znaleziono Barbarę w miejscu: {place}")
+                    barbara_locations.append(place)
+
+                    # Sprawdź czy to NOWE miejsce (nie z notatki)
+                    if place not in known_barbara_locations:
+                        new_barbara_location = place
+                        logger.info(f"🎯 To jest NOWA lokalizacja Barbary: {place}")
+                        # Kontynuuj przeszukiwanie, może być więcej miejsc
+                    else:
+                        logger.info(f"ℹ️ {place} to znana lokalizacja z notatki")
+
+                # Dodaj nowe osoby do kolejki
+                for person_name in people:
+                    normalized_person = normalize_query(person_name)
+                    if (
+                        normalized_person not in checked_people
+                        and normalized_person not in people_queue
+                    ):
+                        people_queue.append(normalized_person)
+    
+    return new_barbara_location
+
+
 def search_loop_node(state: PipelineState) -> PipelineState:
-    """Główna pętla wyszukiwania"""
+    """Główna pętla wyszukiwania - refaktoryzowana dla niższej złożoności"""
     people_queue = state.get("people_to_check", [])
     places_queue = state.get("places_to_check", [])
     checked_people = state.get("checked_people", set())
@@ -406,57 +476,16 @@ def search_loop_node(state: PipelineState) -> PipelineState:
 
     while people_queue or places_queue:
         # Sprawdź osoby
-        if people_queue:
-            person = people_queue.pop(0)
-            if person not in checked_people:
-                logger.debug(f"Sprawdzam: {person}")
-                response = query_api(PEOPLE_URL, person)
-                checked_people.add(person)
-
-                if response and response.get("code") == 0:
-                    message = response.get("message", "")
-                    places = message.split()
-                    for place in places:
-                        normalized_place = normalize_query(place)
-                        if (
-                            normalized_place not in checked_places
-                            and normalized_place not in places_queue
-                        ):
-                            places_queue.append(normalized_place)
+        _process_people_queue(people_queue, checked_people, places_queue, checked_places)
 
         # Sprawdź miejsca
-        if places_queue:
-            place = places_queue.pop(0)
-            if place not in checked_places:
-                logger.debug(f"Sprawdzam: {place}")
-                response = query_api(PLACES_URL, place)
-                checked_places.add(place)
-
-                if response and response.get("code") == 0:
-                    message = response.get("message", "")
-                    people = message.split()
-
-                    # Sprawdź czy Barbara jest w tym miejscu
-                    if "BARBARA" in people:
-                        logger.info(f"Znaleziono Barbarę w miejscu: {place}")
-                        barbara_locations.append(place)
-
-                        # Sprawdź czy to NOWE miejsce (nie z notatki)
-                        if place not in known_barbara_locations:
-                            new_barbara_location = place
-                            logger.info(f"🎯 To jest NOWA lokalizacja Barbary: {place}")
-                            # Kontynuuj przeszukiwanie, może być więcej miejsc
-                        else:
-                            logger.info(f"ℹ️ {place} to znana lokalizacja z notatki")
-
-                    # Dodaj nowe osoby do kolejki
-                    for person_name in people:
-                        normalized_person = normalize_query(person_name)
-                        if (
-                            normalized_person not in checked_people
-                            and normalized_person not in people_queue
-                        ):
-                            people_queue.append(normalized_person)
+        current_new_location = _process_places_queue(
+            places_queue, checked_places, people_queue, checked_people,
+            barbara_locations, known_barbara_locations
+        )
+        
+        if current_new_location:
+            new_barbara_location = current_new_location
 
     logger.info("Zakończono przeszukiwanie.")
 
@@ -483,6 +512,26 @@ def search_loop_node(state: PipelineState) -> PipelineState:
     return state
 
 
+def _send_report_request(location: str) -> Dict[str, Any]:
+    """Wysyła żądanie do centrali"""
+    payload = {"task": "loop", "apikey": CENTRALA_API_KEY, "answer": location}
+    response = requests.post(REPORT_URL, json=payload)
+    response.raise_for_status()
+    return response.json()
+
+
+def _handle_centrala_response(result: Dict[str, Any], state: PipelineState) -> None:
+    """Obsługuje odpowiedź centrali"""
+    if result.get("code") == 0 and "FLG" in str(result):
+        print(f"🏁 {result.get('message', result)}")
+    elif result.get("code") != 0:
+        logger.warning(f"Centrala odrzuciła odpowiedź: {result}")
+        # Może spróbować z inną lokalizacją?
+        barbara_locations = state.get("barbara_locations", [])
+        if len(barbara_locations) > 1:
+            logger.info(f"Inne możliwe lokalizacje: {barbara_locations}")
+
+
 def send_answer_node(state: PipelineState) -> PipelineState:
     """Wysyła odpowiedź do centrali"""
     location = state.get("result")
@@ -490,27 +539,14 @@ def send_answer_node(state: PipelineState) -> PipelineState:
         logger.error("Brak lokalizacji do wysłania")
         return state
 
-    payload = {"task": "loop", "apikey": CENTRALA_API_KEY, "answer": location}
-
     logger.info(f"Wysyłam odpowiedź: {location}")
 
     try:
-        response = requests.post(REPORT_URL, json=payload)
-        response.raise_for_status()
-        result = response.json()
+        result = _send_report_request(location)
         logger.info(f"Odpowiedź centrali: {result}")
+        _handle_centrala_response(result, state)
 
-        # Sprawdź czy to jest poprawna odpowiedź
-        if result.get("code") == 0 and "FLG" in str(result):
-            print(f"🏁 {result.get('message', result)}")
-        elif result.get("code") != 0:
-            logger.warning(f"Centrala odrzuciła odpowiedź: {result}")
-            # Może spróbować z inną lokalizacją?
-            barbara_locations = state.get("barbara_locations", [])
-            if len(barbara_locations) > 1:
-                logger.info(f"Inne możliwe lokalizacje: {barbara_locations}")
-
-    except Exception as e:
+    except requests.exceptions.RequestException as e:
         logger.error(f"Błąd wysyłania: {e}")
         if hasattr(e, "response") and e.response:
             logger.error(f"Szczegóły: {e.response.text}")
@@ -539,7 +575,7 @@ def build_graph() -> Any:
 
 
 def main() -> None:
-    print("=== Zadanie 15: Znajdowanie Barbary Zawadzkiej ===")
+    print("=== Zadanie S03E04: Znajdowanie Barbary Zawadzkiej ===")
     print(f"🚀 Używam silnika: {ENGINE}")
     print(f"🔧 Model: {MODEL_NAME}")
     print(f"📚 SpaCy: {'TAK' if USE_SPACY else 'NIE (fallback na regex)'}")

@@ -414,7 +414,7 @@ def build_graph() -> Any:
 
 
 def main() -> None:
-    print("=== Zadanie 13: Analiza bazy danych BanAN ===")
+    print("=== Zadanie S03E03: Analiza bazy danych BanAN ===")
     print(f"🚀 Używam silnika: {ENGINE}")
     print(f"🔧 Model: {MODEL_NAME}")
     print(f"🌐 API URL: {APIDB_URL}")

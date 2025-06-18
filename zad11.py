@@ -430,7 +430,7 @@ def build_graph() -> Any:
 
 
 def main() -> None:
-    print("=== Zadanie 12: Wektorowe wyszukiwanie raportów ===")
+    print("=== Zadanie S03E02: Wektorowe wyszukiwanie raportów ===")
     print(f"🚀 Używam silnika: {ENGINE}")
     print(f"🔑 Hasło do weapons_tests.zip: {WEAPONS_PASSWORD}")
 

@@ -458,6 +458,7 @@ def load_facts(facts_files):
 
 
 def main():
+    print("=== Zadanie S03E01: przygotowanie metadanych do 10 raportów dostarczonych w formacie TXT ===")
     print("🔄 Rozpoczynam przetwarzanie raportów...")
     base = Path("fabryka")
     download_and_extract(base)
