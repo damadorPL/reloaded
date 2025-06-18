@@ -84,6 +84,7 @@ PHONE_SORTED_URL=https://xxx.xxx.xxx/data/Twój_klucz_z_centrali/phone_sorted.js
 GPS_URL=https://xxx.xxx.xxx/data/Twój_klucz_z_centrali/gps.txt
 GPS_QUESTIONS=https://xxx.xxx.xxx/data/Twój_klucz_z_centrali/gps_question.json
 RAFAL_URL=https://xxx.xxx.xxx/b46c3
+RAFAL_PASSWORD=NONOMNISMORIAR
 ZYGFRYD_PDF=https://xxx.xxx.xxx/dane/zygfryd_notatnik.zip
 BLOG_URL=https://rafal.xxx.xxx/blogXYZ/
 STORY_URL=https://xxx.xxx.xxx/data/Twój_klucz_z_centrali/story.json

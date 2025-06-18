@@ -3,6 +3,7 @@
 """
 S05E03 - Ultra-szybki skrypt realizujący zadanie Rafała
 Multi-engine: openai, lmstudio, anything, gemini, claude
+Konfiguracja przez zmienne środowiskowe (.env)
 """
 import argparse
 import asyncio
@@ -15,9 +16,32 @@ import aiohttp
 import requests
 from dotenv import load_dotenv
 
-# === KONFIGURACJA SILNIKA (skopiowane z innych zadań) ===
+# === ŁADOWANIE KONFIGURACJI Z .ENV ===
 load_dotenv(override=True)
 
+def validate_env_config():
+    """Sprawdza czy wszystkie wymagane zmienne środowiskowe są ustawione"""
+    required_vars = {
+        "RAFAL_URL": "URL endpointu Rafała",
+        "RAFAL_PASSWORD": "Hasło do endpointu Rafała", 
+        "CENTRALA_API_KEY": "Klucz API do Centrali",
+        "ARXIV_URL": "URL dokumentu ArXiv do analizy"
+    }
+    
+    missing_vars = []
+    for var_name, description in required_vars.items():
+        if not os.getenv(var_name):
+            missing_vars.append(f"  {var_name} - {description}")
+    
+    if missing_vars:
+        print("❌ Brakujące zmienne środowiskowe:")
+        print("\n".join(missing_vars))
+        print("\n💡 Dodaj je do pliku .env lub ustaw jako zmienne środowiskowe")
+        return False
+    
+    return True
+
+# === KONFIGURACJA SILNIKA LLM ===
 parser = argparse.ArgumentParser(description="Zadanie Rafała (multi-engine)")
 parser.add_argument(
     "--engine",
@@ -58,7 +82,7 @@ print(f"🔄 ENGINE wykryty: {ENGINE}")
 if ENGINE == "openai":
     MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
         "MODEL_NAME_OPENAI", "gpt-4o"
-    )  # Szybki model!
+    )
 elif ENGINE == "claude":
     MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
         "MODEL_NAME_CLAUDE", "claude-sonnet-4-20250514"
@@ -70,16 +94,22 @@ elif ENGINE == "gemini":
 elif ENGINE == "lmstudio":
     MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
         "MODEL_NAME_LM", "qwen2.5-3b-instruct"
-    )  # SZYBKI!
+    )
 elif ENGINE == "anything":
     MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
         "MODEL_NAME_ANY", "qwen2.5-3b-instruct"
-    )  # SZYBKI!
+    )
 
 print(f"✅ Model: {MODEL_NAME}")
 
+# === KONFIGURACJA Z .ENV ===
+RAFAL_URL = os.getenv("RAFAL_URL")
+RAFAL_PASSWORD = os.getenv("RAFAL_PASSWORD")
+CENTRALA_API_KEY = os.getenv("CENTRALA_API_KEY")
+ARXIV_URL = os.getenv("ARXIV_URL")
+TIMEOUT_SECONDS = int(os.getenv("TIMEOUT_SECONDS", "5"))
 
-# === UNIWERSALNA FUNKCJA LLM (skopiowane z innych zadań) ===
+# === UNIWERSALNA FUNKCJA LLM ===
 def call_llm(prompt: str, temperature: float = 0) -> str:
     """Uniwersalna funkcja wywołania LLM - zoptymalizowana na szybkość"""
 
@@ -94,7 +124,7 @@ def call_llm(prompt: str, temperature: float = 0) -> str:
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
-            max_tokens=100,  # Bardzo mało tokenów = szybciej!
+            max_tokens=int(os.getenv("MAX_TOKENS", "100")),
         )
         return resp.choices[0].message.content.strip()
 
@@ -112,7 +142,7 @@ def call_llm(prompt: str, temperature: float = 0) -> str:
             model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
-            max_tokens=100,
+            max_tokens=int(os.getenv("MAX_TOKENS", "100")),
         )
         return resp.content[0].text.strip()
 
@@ -136,7 +166,7 @@ def call_llm(prompt: str, temperature: float = 0) -> str:
             "model": MODEL_NAME,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": temperature,
-            "max_tokens": 100,  # JESZCZE MNIEJ tokenów = jeszcze szybciej!
+            "max_tokens": int(os.getenv("MAX_TOKENS", "100")),
             "stream": False,
             "top_p": 0.9,
             "frequency_penalty": 0,
@@ -146,8 +176,8 @@ def call_llm(prompt: str, temperature: float = 0) -> str:
             f"{base_url.rstrip('/')}/chat/completions",
             json=payload,
             headers=headers,
-            timeout=5,
-        )  # Max 2s na odpowiedź!
+            timeout=TIMEOUT_SECONDS,
+        )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"].strip()
 
@@ -158,15 +188,16 @@ def call_llm(prompt: str, temperature: float = 0) -> str:
         model = genai.GenerativeModel(MODEL_NAME)
         response = model.generate_content(
             [prompt],
-            generation_config={"temperature": temperature, "max_output_tokens": 100},
+            generation_config={
+                "temperature": temperature, 
+                "max_output_tokens": int(os.getenv("MAX_TOKENS", "100"))
+            },
         )
         return response.text.strip()
 
 
-# === RESZTA KODU (bez zmian) ===
-RAFAL_URL = os.getenv("RAFAL_URL")
-CENTRALA_API_KEY = os.getenv("CENTRALA_API_KEY")
-TIMEOUT = aiohttp.ClientTimeout(total=5)
+# === RESZTA KODU ===
+TIMEOUT = aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)
 
 # Słownik z WSZYSTKIMI możliwymi odpowiedziami - zero AI, zero pobierania!
 HARDCODED_ANSWERS = {
@@ -227,7 +258,7 @@ Odpowiedz TYLKO w formacie JSON:
 {{"bnw01": "pełna definicja BNW-01", "bits": "tylko liczba bitów"}}
 
 HTML (fragment):
-{html_content[:8000]}"""  # Zwiększam do 8000 znaków żeby złapać więcej treści
+{html_content[:8000]}"""
 
         result_text = call_llm(prompt, temperature=0)
         print(f"🤖 LLM ({ENGINE}) odpowiedź: {result_text}")
@@ -296,21 +327,24 @@ async def fetch_and_analyze_knowledge(url: str) -> dict:
 
 async def main():
     start = time.time()
-    if not RAFAL_URL or not CENTRALA_API_KEY:
-        print("❌ Brak konfiguracji w .env")
+    
+    # Sprawdź konfigurację
+    if not validate_env_config():
         return
 
     print(f"🚀 Używam silnika: {ENGINE} z modelem: {MODEL_NAME}")
+    print(f"🔗 RAFAL_URL: {RAFAL_URL}")
+    print(f"⏱️  Timeout: {TIMEOUT_SECONDS}s")
 
     try:
         # 1. Pobierz token
         async with aiohttp.ClientSession(timeout=TIMEOUT) as sess:
-            r1 = await sess.post(RAFAL_URL, json={"password": "NONOMNISMORIAR"})
+            r1 = await sess.post(RAFAL_URL, json={"password": RAFAL_PASSWORD})
             r1.raise_for_status()
             token_data = await r1.json()
             tok = extract_message(token_data)
 
-        print(f"Token: {tok}")
+        print(f"🔑 Token: {tok}")
 
         # 2. Pobierz challenges
         async with aiohttp.ClientSession(timeout=TIMEOUT) as sess:
@@ -327,16 +361,16 @@ async def main():
             print("❌ Błędne dane od serwera")
             return
 
-        print(f"Timestamp: {ts}, Signature: {sig}")
-        print(f"URLs: {urls}")
+        print(f"⏰ Timestamp: {ts}")
+        print(f"✍️  Signature: {sig}")
+        print(f"📋 URLs: {urls}")
         print(f"⏱️  {time.time() - start:.2f}s - Pobrano token i challenges")
 
         # 3. Pobierz zadania + źródło wiedzy RÓWNOLEGLE (kluczowa optymalizacja!)
-        arxiv_url = os.getenv("ARXIV_URL")
         async with aiohttp.ClientSession(timeout=TIMEOUT) as sess:
             # Uruchom wszystko równolegle
             fetch_tasks = [fetch_json(sess, u) for u in urls]
-            knowledge_task = fetch_and_analyze_knowledge(arxiv_url)
+            knowledge_task = fetch_and_analyze_knowledge(ARXIV_URL)
 
             # Czekaj na wszystko naraz
             results = await asyncio.gather(*fetch_tasks, knowledge_task)
@@ -347,7 +381,7 @@ async def main():
             f"⏱️  {time.time() - start:.2f}s - Pobrano dane + przeanalizowano dokument"
         )
         print(f"📖 Dane z dokumentu: {knowledge_data}")
-        print(f"Challenges: {challenges}")
+        print(f"📋 Challenges: {challenges}")
 
         # 4. Przygotuj odpowiedzi używając analizy dokumentu
         answers = {}
