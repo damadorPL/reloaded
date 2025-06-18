@@ -6,16 +6,29 @@ zastępując je słowem "CENZURA" wyłącznie przez LLM.
 Obsługa: openai, lmstudio, anything, gemini, claude.
 DODANO: Obsługę Claude + liczenie tokenów i kosztów dla wszystkich silników (bezpośrednia integracja)
 POPRAWKA: Lepsze wykrywanie silnika z agent.py
+POPRAWKA SONARA: Refaktoryzacja funkcji wysokiej złożoności kognitywnej
 """
 
 import argparse
 import os
+import re
 import sys
+from typing import Optional, Dict, Any
+from abc import ABC, abstractmethod
 
 import requests
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
+
+# Stałe dla komunikatów błędów
+MISSING_OPENAI_KEY_MSG = "❌ Brak OPENAI_API_KEY"
+MISSING_CLAUDE_KEY_MSG = "❌ Brak CLAUDE_API_KEY lub ANTHROPIC_API_KEY w .env"
+MISSING_GEMINI_KEY_MSG = "❌ Brak GEMINI_API_KEY w .env"
+UNSUPPORTED_ENGINE_MSG = "❌ Nieobsługiwany silnik:"
+MISSING_OPENAI_INSTALL_MSG = "❌ Musisz zainstalować openai: pip install openai"
+MISSING_ANTHROPIC_INSTALL_MSG = "❌ Musisz zainstalować anthropic: pip install anthropic"
+MISSING_GEMINI_INSTALL_MSG = "❌ Musisz zainstalować google-generativeai: pip install google-generativeai"
 
 # POPRAWKA: Dodano argumenty CLI jak w innych zadaniach
 parser = argparse.ArgumentParser(description="Cenzura danych (multi-engine + Claude)")
@@ -26,59 +39,62 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-# POPRAWKA: Lepsze wykrywanie silnika (jak w poprawionych zad1.py i zad2.py)
-ENGINE = None
-if args.engine:
-    ENGINE = args.engine.lower()
-elif os.getenv("LLM_ENGINE"):
-    ENGINE = os.getenv("LLM_ENGINE").lower()
-else:
-    # Próbuj wykryć silnik na podstawie ustawionych zmiennych MODEL_NAME
-    model_name = os.getenv("MODEL_NAME", "")
-    if "claude" in model_name.lower():
-        ENGINE = "claude"
-    elif "gemini" in model_name.lower():
-        ENGINE = "gemini"
-    elif "gpt" in model_name.lower() or "openai" in model_name.lower():
-        ENGINE = "openai"
+
+def detect_engine() -> str:
+    """Wykrywa silnik LLM na podstawie argumentów i zmiennych środowiskowych"""
+    if args.engine:
+        return args.engine.lower()
+    elif os.getenv("LLM_ENGINE"):
+        return os.getenv("LLM_ENGINE").lower()
     else:
-        # Sprawdź które API keys są dostępne
-        if os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY"):
-            ENGINE = "claude"
-        elif os.getenv("GEMINI_API_KEY"):
-            ENGINE = "gemini"
-        elif os.getenv("OPENAI_API_KEY"):
-            ENGINE = "openai"
+        # Próbuj wykryć silnik na podstawie ustawionych zmiennych MODEL_NAME
+        model_name = os.getenv("MODEL_NAME", "")
+        if "claude" in model_name.lower():
+            return "claude"
+        elif "gemini" in model_name.lower():
+            return "gemini"
+        elif "gpt" in model_name.lower() or "openai" in model_name.lower():
+            return "openai"
         else:
-            ENGINE = "lmstudio"  # domyślnie
+            # Sprawdź które API keys są dostępne
+            if os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY"):
+                return "claude"
+            elif os.getenv("GEMINI_API_KEY"):
+                return "gemini"
+            elif os.getenv("OPENAI_API_KEY"):
+                return "openai"
+            else:
+                return "lmstudio"  # domyślnie
+
+
+def validate_engine(engine: str) -> None:
+    """Waliduje czy silnik jest obsługiwany"""
+    if engine not in {"openai", "lmstudio", "anything", "gemini", "claude"}:
+        print(f"{UNSUPPORTED_ENGINE_MSG} {engine}", file=sys.stderr)
+        sys.exit(1)
+
+
+def validate_environment() -> None:
+    """Sprawdza czy wszystkie wymagane zmienne środowiskowe są ustawione"""
+    required_vars = ["CENTRALA_API_KEY", "REPORT_URL", "CENZURA_URL"]
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    
+    if missing_vars:
+        print(f"❌ Brak ustawienia: {', '.join(missing_vars)} w .env", file=sys.stderr)
+        sys.exit(1)
+
+
+# Inicjalizacja i walidacja
+ENGINE = detect_engine()
+validate_engine(ENGINE)
+validate_environment()
 
 print(f"🔄 ENGINE wykryty: {ENGINE}")
-
-# Sprawdzenie czy silnik jest obsługiwany
-if ENGINE not in {"openai", "lmstudio", "anything", "gemini", "claude"}:
-    print(f"❌ Nieobsługiwany silnik: {ENGINE}", file=sys.stderr)
-    sys.exit(1)
-
 print(f"✅ Engine: {ENGINE}")
 
 CENTRALA_API_KEY = os.getenv("CENTRALA_API_KEY")
 REPORT_URL = os.getenv("REPORT_URL")
 CENZURA_URL = os.getenv("CENZURA_URL")
-
-if not CENTRALA_API_KEY or not REPORT_URL or not CENZURA_URL:
-    print("❌ Brak ustawienia CENTRALA_API_KEY, REPORT_URL lub CENZURA_URL w .env")
-    sys.exit(1)
-
-
-def download_text(url: str) -> str:
-    try:
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        return resp.text.strip()
-    except Exception as e:
-        print(f"❌ Błąd podczas pobierania danych: {e}")
-        sys.exit(1)
-
 
 # --- ULTRA-TWARDY PROMPT ---
 PROMPT_SYSTEM = (
@@ -102,221 +118,284 @@ PROMPT_SYSTEM = (
 )
 
 
-def censor_llm(text: str) -> str:
-    prompt_user = (
-        "Tekst do cenzury (nie zmieniaj nic poza danymi osobowymi, przykład wyżej!):\n"
-        + text
-    )
+def download_text(url: str) -> str:
+    """Pobiera tekst z podanego URL"""
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        return resp.text.strip()
+    except requests.RequestException as e:
+        print(f"❌ Błąd podczas pobierania danych: {e}", file=sys.stderr)
+        sys.exit(1)
 
-    # --- OpenAI ---
-    if ENGINE == "openai":
-        OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-        OPENAI_API_URL = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1")
-        MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
-            "MODEL_NAME_OPENAI", "gpt-4o-mini"
+
+# --- KLASY LLM CLIENT - POPRAWKA SONARA S3776 ---
+class LLMCensorClient(ABC):
+    """Bazowa klasa dla klientów cenzury LLM"""
+    
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+    
+    @abstractmethod
+    def censor_text(self, text: str) -> str:
+        """Metoda do cenzury tekstu - implementacja w podklasach"""
+        pass
+    
+    def create_user_prompt(self, text: str) -> str:
+        """Tworzy prompt użytkownika"""
+        return (
+            "Tekst do cenzury (nie zmieniaj nic poza danymi osobowymi, przykład wyżej!):\n"
+            + text
         )
 
-        if not OPENAI_API_KEY:
-            print("❌ Brak OPENAI_API_KEY", file=sys.stderr)
-            sys.exit(1)
 
+class OpenAICensorClient(LLMCensorClient):
+    """Klient cenzury dla OpenAI"""
+    
+    def __init__(self, model_name: str, api_key: str, base_url: str):
+        super().__init__(model_name)
         try:
             from openai import OpenAI
         except ImportError:
-            print("❌ Musisz zainstalować openai: pip install openai", file=sys.stderr)
+            print(MISSING_OPENAI_INSTALL_MSG, file=sys.stderr)
             sys.exit(1)
-
-        client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_URL)
-        resp = client.chat.completions.create(
-            model=MODEL_NAME,
+        
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+    
+    def censor_text(self, text: str) -> str:
+        prompt_user = self.create_user_prompt(text)
+        
+        resp = self.client.chat.completions.create(
+            model=self.model_name,
             messages=[
                 {"role": "system", "content": PROMPT_SYSTEM},
                 {"role": "user", "content": prompt_user},
             ],
             temperature=0,
         )
-        # Liczenie tokenów
-        tokens = resp.usage
+        
+        self._log_usage(resp.usage)
+        return resp.choices[0].message.content.strip()
+    
+    def _log_usage(self, usage: Any) -> None:
+        """Loguje użycie tokenów i koszty dla OpenAI"""
+        tokens = usage
         cost = (
             tokens.prompt_tokens / 1_000_000 * 0.60
             + tokens.completion_tokens / 1_000_000 * 2.40
         )
         print(
-            f"[📊 Prompt: {tokens.prompt_tokens} | Completion: {tokens.completion_tokens} | Total: {tokens.total_tokens}]"
+            f"[📊 Prompt: {tokens.prompt_tokens} | "
+            f"Completion: {tokens.completion_tokens} | "
+            f"Total: {tokens.total_tokens}]"
         )
         print(f"[💰 Koszt OpenAI: {cost:.6f} USD]")
-        return resp.choices[0].message.content.strip()
 
-    # --- Claude ---
-    elif ENGINE == "claude":
-        CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
-        MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
-            "MODEL_NAME_CLAUDE", "claude-sonnet-4-20250514"
-        )
 
-        if not CLAUDE_API_KEY:
-            print(
-                "❌ Brak CLAUDE_API_KEY lub ANTHROPIC_API_KEY w .env", file=sys.stderr
-            )
-            sys.exit(1)
-
+class ClaudeCensorClient(LLMCensorClient):
+    """Klient cenzury dla Claude"""
+    
+    def __init__(self, model_name: str, api_key: str):
+        super().__init__(model_name)
         try:
             from anthropic import Anthropic
         except ImportError:
-            print(
-                "❌ Musisz zainstalować anthropic: pip install anthropic",
-                file=sys.stderr,
-            )
+            print(MISSING_ANTHROPIC_INSTALL_MSG, file=sys.stderr)
             sys.exit(1)
-
-        claude_client = Anthropic(api_key=CLAUDE_API_KEY)
-        resp = claude_client.messages.create(
-            model=MODEL_NAME,
+        
+        self.client = Anthropic(api_key=api_key)
+    
+    def censor_text(self, text: str) -> str:
+        prompt_user = self.create_user_prompt(text)
+        
+        resp = self.client.messages.create(
+            model=self.model_name,
             messages=[
                 {"role": "user", "content": PROMPT_SYSTEM + "\n\n" + prompt_user}
             ],
             temperature=0,
             max_tokens=4000,
         )
-
-        # Liczenie tokenów Claude
-        usage = resp.usage
+        
+        self._log_usage(resp.usage)
+        return resp.content[0].text.strip()
+    
+    def _log_usage(self, usage: Any) -> None:
+        """Loguje użycie tokenów i koszty dla Claude"""
         cost = usage.input_tokens * 0.00003 + usage.output_tokens * 0.00015
         print(
-            f"[📊 Prompt: {usage.input_tokens} | Completion: {usage.output_tokens} | Total: {usage.input_tokens + usage.output_tokens}]"
+            f"[📊 Prompt: {usage.input_tokens} | "
+            f"Completion: {usage.output_tokens} | "
+            f"Total: {usage.input_tokens + usage.output_tokens}]"
         )
         print(f"[💰 Koszt Claude: {cost:.6f} USD]")
 
-        return resp.content[0].text.strip()
 
-    # --- Gemini (Google) ---
-    elif ENGINE == "gemini":
-        GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-        MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
-            "MODEL_NAME_GEMINI", "gemini-2.5-pro-latest"
-        )
-
-        if not GEMINI_API_KEY:
-            print("❌ Brak GEMINI_API_KEY w .env", file=sys.stderr)
-            sys.exit(1)
-
+class GeminiCensorClient(LLMCensorClient):
+    """Klient cenzury dla Gemini"""
+    
+    def __init__(self, model_name: str, api_key: str):
+        super().__init__(model_name)
         try:
             import google.generativeai as genai
         except ImportError:
-            print(
-                "❌ Musisz zainstalować google-generativeai: pip install google-generativeai",
-                file=sys.stderr,
-            )
+            print(MISSING_GEMINI_INSTALL_MSG, file=sys.stderr)
             sys.exit(1)
-
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel(MODEL_NAME)
-        response = model.generate_content(
+        
+        genai.configure(api_key=api_key)
+        self.model = genai.GenerativeModel(model_name)
+    
+    def censor_text(self, text: str) -> str:
+        prompt_user = self.create_user_prompt(text)
+        
+        response = self.model.generate_content(
             [PROMPT_SYSTEM + "\n" + prompt_user],
             generation_config={"temperature": 0.0, "max_output_tokens": 4096},
         )
-        print(f"[📊 Gemini - brak szczegółów tokenów]")
-        print(f"[💰 Gemini - sprawdź limity w Google AI Studio]")
+        
+        self._log_usage()
         return response.text.strip()
+    
+    def _log_usage(self) -> None:
+        """Loguje informacje o użyciu dla Gemini"""
+        print("[📊 Gemini - brak szczegółów tokenów]")
+        print("[💰 Gemini - sprawdź limity w Google AI Studio]")
 
-    # --- LM Studio ---
+
+class LocalLLMCensorClient(LLMCensorClient):
+    """Klient cenzury dla lokalnych modeli (LMStudio, Anything)"""
+    
+    def __init__(self, model_name: str, api_key: str, base_url: str, engine_name: str):
+        super().__init__(model_name)
+        try:
+            from openai import OpenAI
+        except ImportError:
+            print(MISSING_OPENAI_INSTALL_MSG, file=sys.stderr)
+            sys.exit(1)
+        
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.engine_name = engine_name
+    
+    def censor_text(self, text: str) -> str:
+        prompt_user = self.create_user_prompt(text)
+        
+        resp = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=[
+                {"role": "system", "content": PROMPT_SYSTEM},
+                {"role": "user", "content": prompt_user},
+            ],
+            temperature=0,
+        )
+        
+        self._log_usage(resp.usage)
+        return resp.choices[0].message.content.strip()
+    
+    def _log_usage(self, usage: Any) -> None:
+        """Loguje użycie tokenów dla lokalnych modeli"""
+        tokens = usage
+        print(
+            f"[📊 Prompt: {tokens.prompt_tokens} | "
+            f"Completion: {tokens.completion_tokens} | "
+            f"Total: {tokens.total_tokens}]"
+        )
+        print("[💰 Model lokalny - brak kosztów]")
+
+
+def create_censor_client() -> LLMCensorClient:
+    """Factory function dla tworzenia klienta cenzury LLM"""
+    if ENGINE == "openai":
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            print(MISSING_OPENAI_KEY_MSG, file=sys.stderr)
+            sys.exit(1)
+        
+        base_url = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1")
+        model_name = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_OPENAI", "gpt-4o-mini")
+        return OpenAICensorClient(model_name, api_key, base_url)
+    
+    elif ENGINE == "claude":
+        api_key = os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            print(MISSING_CLAUDE_KEY_MSG, file=sys.stderr)
+            sys.exit(1)
+        
+        model_name = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_CLAUDE", "claude-sonnet-4-20250514")
+        return ClaudeCensorClient(model_name, api_key)
+    
+    elif ENGINE == "gemini":
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            print(MISSING_GEMINI_KEY_MSG, file=sys.stderr)
+            sys.exit(1)
+        
+        model_name = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_GEMINI", "gemini-2.5-pro-latest")
+        return GeminiCensorClient(model_name, api_key)
+    
     elif ENGINE == "lmstudio":
-        LMSTUDIO_API_KEY = os.getenv("LMSTUDIO_API_KEY", "local")
-        LMSTUDIO_API_URL = os.getenv("LMSTUDIO_API_URL", "http://localhost:1234/v1")
-        MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
-            "MODEL_NAME_LM", "llama-3.3-70b-instruct"
-        )
-
-        try:
-            from openai import OpenAI
-        except ImportError:
-            print("❌ Musisz zainstalować openai: pip install openai", file=sys.stderr)
-            sys.exit(1)
-
-        client = OpenAI(api_key=LMSTUDIO_API_KEY, base_url=LMSTUDIO_API_URL)
-        resp = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": PROMPT_SYSTEM},
-                {"role": "user", "content": prompt_user},
-            ],
-            temperature=0,
-        )
-        # Liczenie tokenów
-        tokens = resp.usage
-        print(
-            f"[📊 Prompt: {tokens.prompt_tokens} | Completion: {tokens.completion_tokens} | Total: {tokens.total_tokens}]"
-        )
-        print(f"[💰 Model lokalny - brak kosztów]")
-        return resp.choices[0].message.content.strip()
-
-    # --- Anything LLM ---
+        api_key = os.getenv("LMSTUDIO_API_KEY", "local")
+        base_url = os.getenv("LMSTUDIO_API_URL", "http://localhost:1234/v1")
+        model_name = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_LM", "llama-3.3-70b-instruct")
+        return LocalLLMCensorClient(model_name, api_key, base_url, "LMStudio")
+    
     elif ENGINE == "anything":
-        ANYTHING_API_KEY = os.getenv("ANYTHING_API_KEY", "local")
-        ANYTHING_API_URL = os.getenv("ANYTHING_API_URL", "http://localhost:1234/v1")
-        MODEL_NAME = os.getenv("MODEL_NAME") or os.getenv(
-            "MODEL_NAME_ANY", "llama-3.3-70b-instruct"
-        )
-
-        try:
-            from openai import OpenAI
-        except ImportError:
-            print("❌ Musisz zainstalować openai: pip install openai", file=sys.stderr)
-            sys.exit(1)
-
-        client = OpenAI(api_key=ANYTHING_API_KEY, base_url=ANYTHING_API_URL)
-        resp = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": PROMPT_SYSTEM},
-                {"role": "user", "content": prompt_user},
-            ],
-            temperature=0,
-        )
-        # Liczenie tokenów
-        tokens = resp.usage
-        print(
-            f"[📊 Prompt: {tokens.prompt_tokens} | Completion: {tokens.completion_tokens} | Total: {tokens.total_tokens}]"
-        )
-        print(f"[💰 Model lokalny - brak kosztów]")
-        return resp.choices[0].message.content.strip()
+        api_key = os.getenv("ANYTHING_API_KEY", "local")
+        base_url = os.getenv("ANYTHING_API_URL", "http://localhost:1234/v1")
+        model_name = os.getenv("MODEL_NAME") or os.getenv("MODEL_NAME_ANY", "llama-3.3-70b-instruct")
+        return LocalLLMCensorClient(model_name, api_key, base_url, "Anything")
+    
     else:
         print(f"❌ Nieznany silnik: {ENGINE}", file=sys.stderr)
         sys.exit(1)
 
 
+def censor_llm(text: str) -> str:
+    """
+    POPRAWKA SONARA S3776: Cenzuruje tekst używając LLM
+    Refaktoryzacja z wysokiej złożoności kognitywnej (28) na prostą delegację
+    """
+    client = create_censor_client()
+    return client.censor_text(text)
+
+
 def extract_flag(text: str) -> str:
-    import re
+    """Wyciąga flagę z tekstu"""
+    flag_match = re.search(r"\{\{FLG:[^}]+\}\}|FLG\{[^}]+\}", text)
+    return flag_match.group(0) if flag_match else ""
 
-    m = re.search(r"\{\{FLG:[^}]+\}\}|FLG\{[^}]+\}", text)
-    return m.group(0) if m else ""
 
-
-def main():
-    raw = download_text(CENZURA_URL)
-    print(f"🔄 Pobrano tekst ({len(raw)} znaków)")
-    print(f"🔄 Cenzuruję używając {ENGINE}...")
-
-    censored = censor_llm(raw)
-    print("=== OCENZUROWANY OUTPUT ===")
-    print(censored)
-    print("===========================")
-
-    payload = {"task": "CENZURA", "apikey": CENTRALA_API_KEY, "answer": censored}
+def send_result(censored_text: str) -> None:
+    """Wysyła ocenzurowany tekst do serwera"""
+    payload = {"task": "CENZURA", "apikey": CENTRALA_API_KEY, "answer": censored_text}
+    
     try:
-        r = requests.post(REPORT_URL, json=payload, timeout=10)
-        if r.ok:
-            resp_text = r.text.strip()
-            flag = extract_flag(resp_text) or extract_flag(censored)
+        response = requests.post(REPORT_URL, json=payload, timeout=10)
+        if response.ok:
+            resp_text = response.text.strip()
+            flag = extract_flag(resp_text) or extract_flag(censored_text)
             if flag:
                 print(flag)
             else:
                 print("Brak flagi w odpowiedzi serwera. Odpowiedź:", resp_text)
         else:
-            print(f"❌ Błąd HTTP {r.status_code}: {r.text}")
-    except Exception as e:
-        print(f"❌ Błąd podczas wysyłania danych: {e}")
+            print(f"❌ Błąd HTTP {response.status_code}: {response.text}", file=sys.stderr)
+    except requests.RequestException as e:
+        print(f"❌ Błąd podczas wysyłania danych: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def main() -> None:
+    """Główna funkcja programu"""
+    raw_text = download_text(CENZURA_URL)
+    print(f"🔄 Pobrano tekst ({len(raw_text)} znaków)")
+    print(f"🔄 Cenzuruję używając {ENGINE}...")
+
+    censored_text = censor_llm(raw_text)
+    print("=== OCENZUROWANY OUTPUT ===")
+    print(censored_text)
+    print("===========================")
+
+    send_result(censored_text)
 
 
 if __name__ == "__main__":
