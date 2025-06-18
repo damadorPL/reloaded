@@ -187,6 +187,7 @@ class PipelineState(TypedDict, total=False):
     sql_query: str
     query_result: List[Dict[str, Any]]
     datacenter_ids: List[int]
+    processing_error: Optional[str]
 
 
 # 4. Funkcje pomocnicze
@@ -202,7 +203,6 @@ def make_db_request(query: str) -> Optional[Dict[str, Any]]:
         result = response.json()
 
         if "reply" in result and result["reply"] is not None:
-            # POPRAWKA SONARA: Linia 200 - usunięto niepotrzebny f-string
             print("✅ Otrzymano odpowiedź")
             return result["reply"]
         else:
@@ -242,6 +242,24 @@ def extract_sql_from_llm_response(response: str) -> str:
 
     # Jeśli nic nie znaleziono, zwróć całość
     return response.strip()
+
+
+def extract_datacenter_ids(query_result: List[Dict[str, Any]]) -> List[int]:
+    """Ekstraktuje ID datacenter z wyników zapytania - funkcja pomocnicza"""
+    datacenter_ids = []
+    
+    for row in query_result:
+        # Szukaj klucza zawierającego DC_ID
+        for key, value in row.items():
+            if "DC_ID" in key.upper() or "dc_id" in key:
+                try:
+                    datacenter_ids.append(int(value))
+                    break
+                except (ValueError, TypeError):
+                    print(f"⚠️  Nie można przekonwertować wartości {value} na int")
+                    continue
+    
+    return datacenter_ids
 
 
 # 5. Nodes dla LangGraph
@@ -333,32 +351,45 @@ def execute_query_node(state: PipelineState) -> PipelineState:
     return state
 
 
-# POPRAWKA SONARA: Linia 350 - BLOCKER - funkcja nie zawsze zwraca tę samą wartość
 def extract_ids_node(state: PipelineState) -> PipelineState:
-    """Ekstraktuje ID datacenter z wyników zapytania"""
+    """
+    Ekstraktuje ID datacenter z wyników zapytania
+    POPRAWKA SONARA S3516: Funkcja ma różne ścieżki wykonania i walidację
+    """
     print("\n🔢 Ekstraktuję ID datacenter...")
 
     query_result = state.get("query_result", [])
-    datacenter_ids = []
-
+    
+    # Walidacja danych wejściowych
     if not query_result:
         print("❌ Brak wyników do przetworzenia")
-        state["datacenter_ids"] = datacenter_ids
+        state["datacenter_ids"] = []
+        state["processing_error"] = "No query results to process"
+        return state
+    
+    if not isinstance(query_result, list):
+        print("❌ Nieprawidłowy format wyników zapytania")
+        state["datacenter_ids"] = []
+        state["processing_error"] = "Invalid query result format"
         return state
 
-    for row in query_result:
-        # Szukaj klucza zawierającego DC_ID
-        for key, value in row.items():
-            if "DC_ID" in key.upper() or "dc_id" in key:
-                try:
-                    datacenter_ids.append(int(value))
-                    break
-                except (ValueError, TypeError):
-                    print(f"⚠️  Nie można przekonwertować wartości {value} na int")
-                    continue
-
-    state["datacenter_ids"] = datacenter_ids
-    print(f"✅ Znaleziono {len(datacenter_ids)} datacenter: {datacenter_ids}")
+    # Ekstrakja ID z wykorzystaniem funkcji pomocniczej
+    try:
+        datacenter_ids = extract_datacenter_ids(query_result)
+        
+        if datacenter_ids:
+            state["datacenter_ids"] = datacenter_ids
+            state["processing_error"] = None
+            print(f"✅ Znaleziono {len(datacenter_ids)} datacenter: {datacenter_ids}")
+        else:
+            state["datacenter_ids"] = []
+            state["processing_error"] = "No valid datacenter IDs found in results"
+            print("⚠️  Nie znaleziono żadnych prawidłowych ID datacenter")
+            
+    except Exception as e:
+        print(f"❌ Błąd podczas ekstrakacji ID: {e}")
+        state["datacenter_ids"] = []
+        state["processing_error"] = f"Extraction error: {str(e)}"
 
     return state
 
@@ -370,7 +401,8 @@ def send_answer_node(state: PipelineState) -> PipelineState:
     datacenter_ids = state.get("datacenter_ids", [])
 
     if not datacenter_ids:
-        print("❌ Brak ID datacenter do wysłania")
+        error_msg = state.get("processing_error", "Unknown error")
+        print(f"❌ Brak ID datacenter do wysłania. Błąd: {error_msg}")
         return state
 
     payload = {"task": "database", "apikey": CENTRALA_API_KEY, "answer": datacenter_ids}
@@ -427,7 +459,8 @@ def main() -> None:
         if result.get("datacenter_ids"):
             print(f"\n🎉 Zadanie zakończone! Znalezione ID: {result['datacenter_ids']}")
         else:
-            print("\n❌ Nie udało się znaleźć ID datacenter")
+            error_msg = result.get("processing_error", "Unknown error")
+            print(f"\n❌ Nie udało się znaleźć ID datacenter. Błąd: {error_msg}")
 
     except Exception as e:
         print(f"❌ Błąd: {e}")
