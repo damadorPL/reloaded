@@ -27,6 +27,9 @@ from langgraph.graph import END, START, StateGraph
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
+# POPRAWKA SONARA: Linia 194 - CRITICAL - stała zamiast duplikacji literału
+MEMORY_MODE = ":memory:"
+
 # Wyłącz ostrzeżenia o embedding
 embedding_warning_emitted = False
 
@@ -178,6 +181,7 @@ def get_embedding(text: str) -> Optional[list[float]]:
             return None
     else:
         if not embedding_warning_emitted:
+            # POPRAWKA SONARA: Linia 199 - MAJOR - usunięto niepotrzebny f-string
             print(
                 "⚠️  Wybrany silnik nie obsługuje embeddingów (albo nie zaimplementowano obsługi). Użyj OpenAI lub LM Studio."
             )
@@ -191,12 +195,13 @@ QDRANT_PORT: int = int(os.getenv("QDRANT_PORT", "6333"))
 QDRANT_API_KEY: Optional[str] = os.getenv("QDRANT_API_KEY")
 COLLECTION_NAME: str = "weapons_reports"
 
-if QDRANT_HOST == ":memory:":
-    qdrant_client = QdrantClient(":memory:")
+if QDRANT_HOST == MEMORY_MODE:  # POPRAWKA SONARA: użycie stałej
+    qdrant_client = QdrantClient(MEMORY_MODE)  # POPRAWKA SONARA: użycie stałej
+    # POPRAWKA SONARA: Linia 262 - MAJOR - usunięto niepotrzebny f-string
     print("📊 Używam Qdrant w pamięci (dane nie będą zapisane)")
 elif QDRANT_API_KEY:
     qdrant_client = QdrantClient(url=os.getenv("QDRANT_URL"), api_key=QDRANT_API_KEY)
-    print(f"☁️  Połączono z Qdrant Cloud")
+    print("☁️  Połączono z Qdrant Cloud")
 else:
     qdrant_client = QdrantClient(QDRANT_HOST, port=QDRANT_PORT)
     print(f"🐳 Połączono z Qdrant: {QDRANT_HOST}:{QDRANT_PORT}")
@@ -209,7 +214,7 @@ else:
         print("\n💡 Wskazówki:")
         print("   - Dla Docker: docker run -d --name qdrant -p 6333:6333 qdrant/qdrant")
         print("   - Dla WSL2: upewnij się że Docker Desktop jest uruchomiony")
-        print("   - Lub ustaw QDRANT_HOST=:memory: w .env dla trybu in-memory")
+        print(f"   - Lub ustaw QDRANT_HOST={MEMORY_MODE} w .env dla trybu in-memory")
         sys.exit(1)
 
 # === USUWANIE KOLEKCJI JEŚLI ISTNIEJE (dowolny tryb, także Cloud/In-Memory) ===
@@ -259,7 +264,7 @@ def download_and_extract(dest: Path) -> Path:
         print("❌ Nie znaleziono weapons_tests.zip")
         sys.exit(1)
 
-    print(f"🔓 Rozpakowywanie weapons_tests.zip z hasłem...")
+    print("🔓 Rozpakowywanie weapons_tests.zip z hasłem...")
     weapons_dir = weapons_zip.parent / "weapons_tests"
 
     with zipfile.ZipFile(weapons_zip, "r") as zf:
@@ -429,10 +434,11 @@ def main() -> None:
     print(f"🚀 Używam silnika: {ENGINE}")
     print(f"🔑 Hasło do weapons_tests.zip: {WEAPONS_PASSWORD}")
 
-    if QDRANT_HOST == ":memory:":
-        print(f"💾 Qdrant: tryb in-memory (bez persystencji)")
+    if QDRANT_HOST == MEMORY_MODE:  # POPRAWKA SONARA: użycie stałej
+        # POPRAWKA SONARA: Linia 433, 435 - MAJOR - usunięto niepotrzebne f-stringi
+        print("💾 Qdrant: tryb in-memory (bez persystencji)")
     elif QDRANT_API_KEY:
-        print(f"☁️  Qdrant: Cloud")
+        print("☁️  Qdrant: Cloud")
     else:
         print(f"🐳 Qdrant: {QDRANT_HOST}:{QDRANT_PORT}")
 
