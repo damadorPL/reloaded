@@ -17,7 +17,7 @@ OPENAI_API_URL=https://api.openai.com/v1
 MODEL_NAME_IMAGE=dall-e-3
 
 # Model dla chatu
-MODEL_NAME_OPENAI=gpt-4o
+MODEL_NAME_OPENAI=gpt-4.1-mini
 
 # Model do ropoznawania obrazów
 MODEL_NAME_VISION=gpt-4o

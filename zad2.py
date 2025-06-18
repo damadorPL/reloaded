@@ -256,7 +256,7 @@ def decide_answer(question: str) -> str:
 def converse() -> None:
     print(f"🔄 Engine: {ENGINE}")
     session = requests.Session()
-    session.verify = False
+    session.verify = True
     msg_id = 0
     outgoing = {"text": "READY", "msgID": str(msg_id)}
     print(">>>", outgoing)

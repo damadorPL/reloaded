@@ -165,21 +165,17 @@ def call_llm_with_retry(prompt: str, max_retries: int = 2) -> str:
     for attempt in range(max_retries + 1):
         try:
             result = call_llm(prompt)
-
             # Sprawdź czy odpowiedź zawiera oczekiwane słowa kluczowe
             import re
-
             keywords = re.findall(r"\b(people|hardware|other)\b", result.lower())
             if keywords:
                 return result
-
-            # Jeśli nie znaleziono słów kluczowych i to nie ostatnia próba
+            # Jeśli nie znaleziono słów kluczowych i to nie ostatnia próba    
             if attempt < max_retries:
                 print(
                     f"[RETRY] Attempt {attempt + 1}/{max_retries + 1} - no valid keywords found, retrying..."
                 )
                 continue
-
         except Exception as e:
             if attempt < max_retries:
                 print(
