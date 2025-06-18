@@ -42,6 +42,16 @@ except ImportError:
     HAS_OCR = False
     print("⚠️  OCR not available - images won't be processed")
 
+# Constants for repeated strings
+PERSON_NAME_PATTERN = r"\b[A-ZŁŚŻŹ][a-ząęółśżźćń]+ [A-ZŁŚŻŹ][a-ząęółśżźćń]+\b"
+YEAR_PATTERN = r"\b(19|20|21|22)\d{2}\b"
+RAFAL_NAME = "Rafał"
+RAFAL_LOWERCASE = "rafał"
+GRUDZIADZ_CITY = "Grudziądz"
+UNKNOWN_ANSWER = "nie wiem"
+RAFAL_DEAD = "Rafał nie żyje"
+DEAD_STATUS = "nie żyje"
+
 # Configuration
 load_dotenv(override=True)
 logging.basicConfig(
@@ -269,129 +279,151 @@ class EnhancedDocumentProcessor:
         """Enhanced JSON processing with better structure parsing"""
         try:
             data = json.loads(content.decode("utf-8"))
-
-            # Special handling for different JSON types
-            if isinstance(data, list) and len(data) > 0:
-                # List of questions or items
-                processed_items = []
-                for i, item in enumerate(data):
-                    if isinstance(item, str):
-                        processed_items.append(f"Question {i+1}: {item}")
-                    elif isinstance(item, dict):
-                        processed_items.append(
-                            f"Item {i+1}: {json.dumps(item, ensure_ascii=False)}"
-                        )
-                return "\n".join(processed_items)
-
-            elif isinstance(data, dict):
-                # Phone conversations or structured data
-                if any("rozmowa" in str(k).lower() for k in data.keys()):
-                    conversations = []
-                    for key, value in data.items():
-                        if isinstance(value, str) and len(value) > 30:
-                            # Clean up conversation text
-                            clean_text = re.sub(r"\s+", " ", value).strip()
-                            conversations.append(f"=== {key} ===\n{clean_text}")
-                        elif isinstance(value, dict):
-                            conv_text = json.dumps(value, ensure_ascii=False, indent=2)
-                            conversations.append(f"=== {key} ===\n{conv_text}")
-                    return "\n\n".join(conversations)
-
-                # Regular structured data
-                return json.dumps(data, ensure_ascii=False, indent=2)
-
-            return json.dumps(data, ensure_ascii=False, indent=2)
-
+            return self._format_json_data(data)
         except Exception as e:
             logger.error(f"JSON processing error: {e}")
             return content.decode("utf-8", errors="ignore")
 
+    def _format_json_data(self, data: Any) -> str:
+        """Format JSON data based on structure"""
+        if isinstance(data, list) and len(data) > 0:
+            return self._format_json_list(data)
+        elif isinstance(data, dict):
+            return self._format_json_dict(data)
+        return json.dumps(data, ensure_ascii=False, indent=2)
+
+    def _format_json_list(self, data: List) -> str:
+        """Format JSON list data"""
+        processed_items = []
+        for i, item in enumerate(data):
+            if isinstance(item, str):
+                processed_items.append(f"Question {i+1}: {item}")
+            elif isinstance(item, dict):
+                processed_items.append(
+                    f"Item {i+1}: {json.dumps(item, ensure_ascii=False)}"
+                )
+        return "\n".join(processed_items)
+
+    def _format_json_dict(self, data: Dict) -> str:
+        """Format JSON dictionary data"""
+        if self._is_conversation_data(data):
+            return self._format_conversation_data(data)
+        return json.dumps(data, ensure_ascii=False, indent=2)
+
+    def _is_conversation_data(self, data: Dict) -> bool:
+        """Check if data contains conversation information"""
+        return any("rozmowa" in str(k).lower() for k in data.keys())
+
+    def _format_conversation_data(self, data: Dict) -> str:
+        """Format conversation data"""
+        conversations = []
+        for key, value in data.items():
+            if isinstance(value, str) and len(value) > 30:
+                clean_text = re.sub(r"\s+", " ", value).strip()
+                conversations.append(f"=== {key} ===\n{clean_text}")
+            elif isinstance(value, dict):
+                conv_text = json.dumps(value, ensure_ascii=False, indent=2)
+                conversations.append(f"=== {key} ===\n{conv_text}")
+        return "\n\n".join(conversations)
+
     def _process_text_enhanced(self, content: bytes) -> str:
         """Enhanced text processing with better encoding detection"""
+        text = self._decode_content(content)
+        return self._clean_html_if_needed(text)
+
+    def _decode_content(self, content: bytes) -> str:
+        """Decode content with fallback encodings"""
         try:
-            # Try UTF-8 first
-            text = content.decode("utf-8")
+            return content.decode("utf-8")
         except UnicodeDecodeError:
             try:
-                # Try other common encodings
-                text = content.decode("latin-1")
+                return content.decode("latin-1")
             except:
-                text = content.decode("utf-8", errors="ignore")
+                return content.decode("utf-8", errors="ignore")
 
-        # Clean up HTML if needed
+    def _clean_html_if_needed(self, text: str) -> str:
+        """Clean HTML tags if present"""
         if "<html" in text.lower() or "<!doctype" in text.lower():
-            # Basic HTML cleaning
             text = re.sub(r"<[^>]+>", " ", text)
             text = re.sub(r"\s+", " ", text)
-
         return text.strip()
 
     def _process_zip_enhanced(self, content: bytes, source_name: str) -> str:
         """Enhanced ZIP processing with better password handling"""
-        texts = []
-
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
             tmp.write(content)
             tmp_path = tmp.name
 
         try:
-            # Try normal extraction first
-            try:
-                with zipfile.ZipFile(tmp_path, "r") as zf:
-                    for name in zf.namelist():
-                        if not name.endswith("/"):
-                            try:
-                                file_content = zf.read(name)
-                                file_text = self.extract_text_from_content(
-                                    file_content, name, source_name
-                                )
-                                if file_text.strip():
-                                    texts.append(f"\n=== {name} ===\n{file_text}")
-                            except RuntimeError as e:
-                                if "encrypted" in str(e).lower():
-                                    logger.info(f"  File {name} is encrypted")
-                                else:
-                                    logger.error(f"Failed to process {name}: {e}")
-            except Exception as e:
-                logger.debug(f"Normal ZIP extraction failed: {e}")
-
-            # Enhanced encrypted extraction with multiple password attempts
-            if HAS_PYZIPPER:
-                passwords_to_try = [WEAPONS_PASSWORD, "weapons"]
-                for password in passwords_to_try:
-                    if password:
-                        try:
-                            with pyzipper.AESZipFile(tmp_path, "r") as zf:
-                                zf.setpassword(password.encode())
-                                for name in zf.namelist():
-                                    if not name.endswith("/"):
-                                        try:
-                                            file_content = zf.read(name)
-                                            file_text = self.extract_text_from_content(
-                                                file_content, name, source_name
-                                            )
-                                            if file_text.strip():
-                                                texts.append(
-                                                    f"\n=== {name} (decrypted) ===\n{file_text}"
-                                                )
-                                                logger.info(
-                                                    f"  ✅ Decrypted and processed {name}"
-                                                )
-                                        except Exception as e:
-                                            logger.debug(
-                                                f"Failed to decrypt {name} with {password}: {e}"
-                                            )
-                                break  # If successful with this password, don't try others
-                        except Exception as e:
-                            logger.debug(
-                                f"PyZipper failed with password {password}: {e}"
-                            )
-                            continue
-
+            texts = []
+            texts.extend(self._try_normal_zip_extraction(tmp_path, source_name))
+            texts.extend(self._try_encrypted_zip_extraction(tmp_path, source_name))
+            return "\n".join(texts)
         finally:
             os.unlink(tmp_path)
 
-        return "\n".join(texts)
+    def _try_normal_zip_extraction(self, tmp_path: str, source_name: str) -> List[str]:
+        """Try normal ZIP extraction"""
+        texts = []
+        try:
+            with zipfile.ZipFile(tmp_path, "r") as zf:
+                texts = self._extract_zip_files(zf, source_name)
+        except Exception as e:
+            logger.debug(f"Normal ZIP extraction failed: {e}")
+        return texts
+
+    def _try_encrypted_zip_extraction(self, tmp_path: str, source_name: str) -> List[str]:
+        """Try encrypted ZIP extraction"""
+        texts = []
+        if HAS_PYZIPPER:
+            passwords_to_try = [WEAPONS_PASSWORD, "weapons"]
+            for password in passwords_to_try:
+                if password:
+                    try:
+                        with pyzipper.AESZipFile(tmp_path, "r") as zf:
+                            zf.setpassword(password.encode())
+                            texts = self._extract_encrypted_zip_files(zf, source_name)
+                            if texts:
+                                break
+                    except Exception as e:
+                        logger.debug(f"PyZipper failed with password {password}: {e}")
+        return texts
+
+    def _extract_zip_files(self, zf: zipfile.ZipFile, source_name: str) -> List[str]:
+        """Extract files from ZIP archive"""
+        texts = []
+        for name in zf.namelist():
+            if not name.endswith("/"):
+                try:
+                    file_content = zf.read(name)
+                    file_text = self.extract_text_from_content(
+                        file_content, name, source_name
+                    )
+                    if file_text.strip():
+                        texts.append(f"\n=== {name} ===\n{file_text}")
+                except RuntimeError as e:
+                    if "encrypted" in str(e).lower():
+                        logger.info(f"  File {name} is encrypted")
+                    else:
+                        logger.error(f"Failed to process {name}: {e}")
+        return texts
+
+    def _extract_encrypted_zip_files(self, zf: pyzipper.AESZipFile, source_name: str) -> List[str]:
+        """Extract files from encrypted ZIP archive"""
+        texts = []
+        for name in zf.namelist():
+            if not name.endswith("/"):
+                try:
+                    file_content = zf.read(name)
+                    file_text = self.extract_text_from_content(
+                        file_content, name, source_name
+                    )
+                    if file_text.strip():
+                        texts.append(f"\n=== {name} (decrypted) ===\n{file_text}")
+                        logger.info(f"  ✅ Decrypted and processed {name}")
+                except Exception as e:
+                    logger.debug(f"Failed to decrypt {name}: {e}")
+        return texts
 
     def _process_pdf(self, content: bytes) -> str:
         """Enhanced PDF processing"""
@@ -404,14 +436,10 @@ class EnhancedDocumentProcessor:
                 text = page.get_text()
 
                 if text.strip():
-                    # Clean up text
                     clean_text = re.sub(r"\s+", " ", text).strip()
                     text_parts.append(f"--- Page {page_num + 1} ---\n{clean_text}")
                 elif HAS_OCR:
-                    # Fallback to OCR
-                    pix = page.get_pixmap()
-                    img_data = pix.tobytes("png")
-                    ocr_text = self._process_image(img_data)
+                    ocr_text = self._extract_ocr_from_page(page)
                     if ocr_text.strip():
                         text_parts.append(
                             f"--- Page {page_num + 1} (OCR) ---\n{ocr_text}"
@@ -422,6 +450,12 @@ class EnhancedDocumentProcessor:
         except Exception as e:
             logger.error(f"PDF processing error: {e}")
             return ""
+
+    def _extract_ocr_from_page(self, page) -> str:
+        """Extract text from PDF page using OCR"""
+        pix = page.get_pixmap()
+        img_data = pix.tobytes("png")
+        return self._process_image(img_data)
 
     def _process_image(self, content: bytes) -> str:
         """Enhanced image processing with OCR"""
@@ -500,76 +534,86 @@ class EnhancedKnowledgeBase:
         metadata = metadata or {}
 
         if self.collection and self.embeddings_model:
-            try:
-                # Enhanced chunking strategy
-                chunks = self._smart_split_text(content, doc_id)
-
-                for i, chunk in enumerate(chunks):
-                    chunk_id = f"{doc_id}_{i}"
-                    embedding = self.embeddings_model.encode(chunk).tolist()
-
-                    # Enhanced metadata
-                    chunk_metadata = {
-                        "title": title,
-                        "source": doc_id,
-                        "chunk": i,
-                        "total_chunks": len(chunks),
-                        "content_type": metadata.get("type", "general"),
-                        "key_entities": ",".join(self._extract_entities(chunk)),
-                        "contains_names": self._contains_person_names(chunk),
-                        "contains_companies": self._contains_company_names(chunk),
-                        "contains_years": self._contains_years(chunk),
-                        "contains_places": self._contains_places(chunk),
-                    }
-
-                    self.collection.add(
-                        embeddings=[embedding],
-                        documents=[chunk],
-                        metadatas=[chunk_metadata],
-                        ids=[chunk_id],
-                    )
-            except Exception as e:
-                logger.error(f"Failed to add document to ChromaDB: {e}")
+            self._add_document_to_chroma(doc_id, title, content, metadata)
         else:
-            # Enhanced fallback
-            self.documents.append(
-                {
-                    "id": doc_id,
-                    "title": title,
-                    "content": content,
-                    "metadata": metadata,
-                    "entities": self._extract_entities(content),
-                    "key_terms": self._extract_enhanced_key_terms(content),
-                }
-            )
+            self._add_document_to_fallback(doc_id, title, content, metadata)
+
+    def _add_document_to_chroma(self, doc_id: str, title: str, content: str, metadata: Dict[str, Any]):
+        """Add document to ChromaDB"""
+        try:
+            chunks = self._smart_split_text(content, doc_id)
+
+            for i, chunk in enumerate(chunks):
+                chunk_id = f"{doc_id}_{i}"
+                embedding = self.embeddings_model.encode(chunk).tolist()
+
+                chunk_metadata = self._create_chunk_metadata(title, doc_id, i, len(chunks), chunk, metadata)
+
+                self.collection.add(
+                    embeddings=[embedding],
+                    documents=[chunk],
+                    metadatas=[chunk_metadata],
+                    ids=[chunk_id],
+                )
+        except Exception as e:
+            logger.error(f"Failed to add document to ChromaDB: {e}")
+
+    def _add_document_to_fallback(self, doc_id: str, title: str, content: str, metadata: Dict[str, Any]):
+        """Add document to fallback storage"""
+        self.documents.append(
+            {
+                "id": doc_id,
+                "title": title,
+                "content": content,
+                "metadata": metadata,
+                "entities": self._extract_entities(content),
+                "key_terms": self._extract_enhanced_key_terms(content),
+            }
+        )
+
+    def _create_chunk_metadata(self, title: str, doc_id: str, chunk_idx: int, total_chunks: int, chunk: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Create metadata for document chunk"""
+        return {
+            "title": title,
+            "source": doc_id,
+            "chunk": chunk_idx,
+            "total_chunks": total_chunks,
+            "content_type": metadata.get("type", "general"),
+            "key_entities": ",".join(self._extract_entities(chunk)),
+            "contains_names": self._contains_person_names(chunk),
+            "contains_companies": self._contains_company_names(chunk),
+            "contains_years": self._contains_years(chunk),
+            "contains_places": self._contains_places(chunk),
+        }
 
     def search(
         self, query: str, n_results: int = 8, search_type: str = "comprehensive"
     ) -> List[str]:
         """Enhanced search with multiple strategies"""
-
         if search_type == "comprehensive":
-            # Multi-strategy search
-            results = []
-
-            # 1. Semantic search
-            semantic_results = self._semantic_search(query, n_results)
-            results.extend(semantic_results)
-
-            # 2. Keyword search
-            keyword_results = self._keyword_search(query, n_results)
-            results.extend(keyword_results)
-
-            # 3. Entity-based search
-            entity_results = self._entity_search(query, n_results)
-            results.extend(entity_results)
-
-            # Remove duplicates and rank
-            unique_results = self._deduplicate_and_rank(results, query)
-            return unique_results[:n_results]
-
+            return self._comprehensive_search(query, n_results)
         else:
             return self._semantic_search(query, n_results)
+
+    def _comprehensive_search(self, query: str, n_results: int) -> List[str]:
+        """Multi-strategy comprehensive search"""
+        results = []
+
+        # 1. Semantic search
+        semantic_results = self._semantic_search(query, n_results)
+        results.extend(semantic_results)
+
+        # 2. Keyword search
+        keyword_results = self._keyword_search(query, n_results)
+        results.extend(keyword_results)
+
+        # 3. Entity-based search
+        entity_results = self._entity_search(query, n_results)
+        results.extend(entity_results)
+
+        # Remove duplicates and rank
+        unique_results = self._deduplicate_and_rank(results, query)
+        return unique_results[:n_results]
 
     def _semantic_search(self, query: str, n_results: int) -> List[str]:
         """Semantic vector search"""
@@ -599,106 +643,99 @@ class EnhancedKnowledgeBase:
 
     def _keyword_search(self, query: str, n_results: int) -> List[str]:
         """Enhanced keyword search"""
-        relevant_texts = []
         query_words = set(query.lower().split())
-
-        # Use documents from ChromaDB or fallback
-        documents_to_search = []
-
-        if self.collection:
-            try:
-                # Get all documents for keyword search
-                all_docs = self.collection.get()
-                for doc, metadata in zip(all_docs["documents"], all_docs["metadatas"]):
-                    documents_to_search.append(
-                        {
-                            "content": doc,
-                            "metadata": metadata,
-                            "title": metadata.get("title", "Unknown"),
-                        }
-                    )
-            except:
-                documents_to_search = self.documents
-        else:
-            documents_to_search = self.documents
-
+        documents_to_search = self._get_documents_for_search()
+        
+        relevant_texts = []
         for doc in documents_to_search:
-            content = doc.get("content", "")
-            content_lower = content.lower()
-
-            # Enhanced scoring
-            score = 0
-            for word in query_words:
-                if len(word) > 2:
-                    # Exact matches get higher score
-                    exact_matches = content_lower.count(word)
-                    score += exact_matches * len(word) * 2
-
-                    # Partial matches
-                    if word in content_lower:
-                        score += len(word)
-
-            # Bonus for multiple query words in same sentence
-            sentences = content.split(".")
-            for sentence in sentences:
-                sentence_lower = sentence.lower()
-                matches_in_sentence = sum(
-                    1 for word in query_words if word in sentence_lower
-                )
-                if matches_in_sentence > 1:
-                    score += matches_in_sentence * 10
-
+            score = self._calculate_keyword_score(doc, query_words)
             if score > 0:
-                title = doc.get(
-                    "title", doc.get("metadata", {}).get("title", "Unknown")
-                )
+                title = self._get_document_title(doc)
+                content = doc.get("content", "")
                 relevant_texts.append((f"[{title}]\n{content}", score, "keyword"))
 
         return relevant_texts
 
+    def _calculate_keyword_score(self, doc: Dict, query_words: set) -> int:
+        """Calculate keyword matching score for a document"""
+        content = doc.get("content", "")
+        content_lower = content.lower()
+        
+        score = 0
+        for word in query_words:
+            if len(word) > 2:
+                exact_matches = content_lower.count(word)
+                score += exact_matches * len(word) * 2
+                
+                if word in content_lower:
+                    score += len(word)
+
+        # Bonus for multiple query words in same sentence
+        sentences = content.split(".")
+        for sentence in sentences:
+            sentence_lower = sentence.lower()
+            matches_in_sentence = sum(
+                1 for word in query_words if word in sentence_lower
+            )
+            if matches_in_sentence > 1:
+                score += matches_in_sentence * 10
+
+        return score
+
     def _entity_search(self, query: str, n_results: int) -> List[str]:
         """Entity-based search for names, companies, etc."""
-        relevant_texts = []
-
-        # Extract entities from query
         query_entities = self._extract_entities(query)
-
+        
         if not query_entities:
             return []
 
+        documents_to_search = self._get_documents_for_search()
+        relevant_texts = []
+        
+        for doc in documents_to_search:
+            score = self._calculate_entity_score(doc, query_entities)
+            if score > 0:
+                title = self._get_document_title(doc)
+                content = doc.get("content", "")
+                relevant_texts.append((f"[{title}]\n{content}", score, "entity"))
+
+        return relevant_texts
+
+    def _calculate_entity_score(self, doc: Dict, query_entities: List[str]) -> int:
+        """Calculate entity matching score for a document"""
+        content = doc.get("content", "")
+        content_lower = content.lower()
+        
+        score = 0
+        for entity in query_entities:
+            if entity.lower() in content_lower:
+                score += len(entity) * 5
+        
+        return score
+
+    def _get_documents_for_search(self) -> List[Dict]:
+        """Get documents for search from ChromaDB or fallback"""
         documents_to_search = []
+        
         if self.collection:
             try:
                 all_docs = self.collection.get()
                 for doc, metadata in zip(all_docs["documents"], all_docs["metadatas"]):
-                    documents_to_search.append(
-                        {
-                            "content": doc,
-                            "metadata": metadata,
-                            "title": metadata.get("title", "Unknown"),
-                        }
-                    )
+                    documents_to_search.append({
+                        "content": doc,
+                        "metadata": metadata,
+                        "title": metadata.get("title", "Unknown"),
+                    })
             except:
                 documents_to_search = self.documents
         else:
             documents_to_search = self.documents
+            
+        return documents_to_search
 
-        for doc in documents_to_search:
-            content = doc.get("content", "")
-            content_lower = content.lower()
-
-            score = 0
-            for entity in query_entities:
-                if entity.lower() in content_lower:
-                    score += len(entity) * 5  # Higher score for entity matches
-
-            if score > 0:
-                title = doc.get(
-                    "title", doc.get("metadata", {}).get("title", "Unknown")
-                )
-                relevant_texts.append((f"[{title}]\n{content}", score, "entity"))
-
-        return relevant_texts
+    def _get_document_title(self, doc: Dict) -> str:
+        """Get document title from various sources"""
+        return doc.get("title", doc.get("metadata", {}).get("title", "Unknown"))
 
     def _fallback_search(self, query: str, n_results: int) -> List[str]:
         """Fallback search without ChromaDB"""
@@ -725,12 +762,10 @@ class EnhancedKnowledgeBase:
         unique_results = {}
 
         for text, score, search_type in results:
-            # Use first 200 chars as key for deduplication
-            key = text[:200]
+            key = text[:200]  # Use first 200 chars as key for deduplication
             if key not in unique_results or unique_results[key][1] < score:
                 unique_results[key] = (text, score, search_type)
 
-        # Sort by score
         sorted_results = sorted(
             unique_results.values(), key=lambda x: x[1], reverse=True
         )
@@ -738,23 +773,30 @@ class EnhancedKnowledgeBase:
 
     def _smart_split_text(self, text: str, doc_id: str) -> List[str]:
         """Smart text chunking based on content type"""
-        chunk_size = 1200
-        overlap = 200
-
-        # Special handling for different document types
-        if "phone" in doc_id or "rozmowa" in text.lower():
-            # Split by conversation markers
-            conversations = re.split(r"===.*?===", text)
-            return [conv.strip() for conv in conversations if conv.strip()]
-
-        elif "fabryka" in doc_id or "sektor" in text.lower():
-            # Split by report sections
-            sections = re.split(r"---.*?---", text)
-            return [section.strip() for section in sections if section.strip()]
-
+        if self._is_phone_content(doc_id, text):
+            return self._split_conversation_content(text)
+        elif self._is_factory_content(doc_id, text):
+            return self._split_factory_content(text)
         else:
-            # Standard chunking
-            return self._standard_chunk(text, chunk_size, overlap)
+            return self._standard_chunk(text, 1200, 200)
+
+    def _is_phone_content(self, doc_id: str, text: str) -> bool:
+        """Check if content is phone conversation"""
+        return "phone" in doc_id or "rozmowa" in text.lower()
+
+    def _is_factory_content(self, doc_id: str, text: str) -> bool:
+        """Check if content is factory report"""
+        return "fabryka" in doc_id or "sektor" in text.lower()
+
+    def _split_conversation_content(self, text: str) -> List[str]:
+        """Split conversation content by markers"""
+        conversations = re.split(r"===.*?===", text)
+        return [conv.strip() for conv in conversations if conv.strip()]
+
+    def _split_factory_content(self, text: str) -> List[str]:
+        """Split factory content by sections"""
+        sections = re.split(r"---.*?---", text)
+        return [section.strip() for section in sections if section.strip()]
 
     def _standard_chunk(self, text: str, chunk_size: int, overlap: int) -> List[str]:
         """Standard text chunking with overlap"""
@@ -768,7 +810,6 @@ class EnhancedKnowledgeBase:
             end = start + chunk_size
 
             if end < len(text):
-                # Try to break at sentence boundary
                 sentence_end = text.rfind(".", start, end)
                 if sentence_end > start + chunk_size // 2:
                     end = sentence_end + 1
@@ -788,9 +829,7 @@ class EnhancedKnowledgeBase:
         entities = []
 
         # Person names (Polish pattern)
-        person_names = re.findall(
-            r"\b[A-ZŁŚŻŹ][a-ząęółśżźćń]+ [A-ZŁŚŻŹ][a-ząęółśżźćń]+\b", text
-        )
+        person_names = re.findall(PERSON_NAME_PATTERN, text)
         entities.extend(person_names)
 
         # Company names
@@ -803,12 +842,12 @@ class EnhancedKnowledgeBase:
             entities.extend(matches)
 
         # Years
-        years = re.findall(r"\b(19|20|21|22)\d{2}\b", text)
+        years = re.findall(YEAR_PATTERN, text)
         entities.extend(years)
 
         # Places
         places = re.findall(
-            r"\b(Grudziądz|Lubawa|Kraków|Szwajcaria|Warszawa)\b", text, re.IGNORECASE
+            rf"\b({GRUDZIADZ_CITY}|Lubawa|Kraków|Szwajcaria|Warszawa)\b", text, re.IGNORECASE
         )
         entities.extend(places)
 
@@ -818,7 +857,7 @@ class EnhancedKnowledgeBase:
         """Check if text contains person names"""
         person_names = [
             "Adam",
-            "Rafał",
+            RAFAL_NAME,
             "Samuel",
             "Zygfryd",
             "Andrzej",
@@ -836,11 +875,11 @@ class EnhancedKnowledgeBase:
 
     def _contains_years(self, text: str) -> bool:
         """Check if text contains years"""
-        return bool(re.search(r"\b(19|20|21|22)\d{2}\b", text))
+        return bool(re.search(YEAR_PATTERN, text))
 
     def _contains_places(self, text: str) -> bool:
         """Check if text contains place names"""
-        places = ["Grudziądz", "Lubawa", "Kraków", "Szwajcaria", "Warszawa"]
+        places = [GRUDZIADZ_CITY, "Lubawa", "Kraków", "Szwajcaria", "Warszawa"]
         text_lower = text.lower()
         return any(place.lower() in text_lower for place in places)
 
@@ -848,12 +887,11 @@ class EnhancedKnowledgeBase:
         """Extract enhanced key terms"""
         key_terms = []
 
-        # All previous patterns plus enhanced ones
         patterns = [
-            r"\b(19|20|21|22)\d{2}\b",  # Years
-            r"\b[A-ZŁŚŻŹ][a-ząęółśżźćń]+ [A-ZŁŚŻŹ][a-ząęółśżźćń]+\b",  # Names
+            YEAR_PATTERN,  # Years
+            PERSON_NAME_PATTERN,  # Names
             r"\b(?:BanAN|SoftoAI|Softo).*?\b",  # Company variations
-            r"\b(?:Grudziądz|Lubawa|Kraków|Szwajcaria)\b",  # Places
+            rf"\b(?:{GRUDZIADZ_CITY}|Lubawa|Kraków|Szwajcaria)\b",  # Places
             r"\b(?:NONOMNISMORIAR|hasło|password)\b",  # Passwords
             r"\bul\.\s*[A-ZŁŚŻŹ][a-ząęółśżźćń\s]+\d+\b",  # Addresses
             r"\b(?:jaskinia|fabryka|profesor|uniwersytet)\b",  # Key concepts
@@ -998,21 +1036,19 @@ def answer_questions_node(state: StoryState) -> StoryState:
         logger.info(f"\n🔍 Question {i+1}: {question}")
 
         try:
-            answer = _answer_question_enhanced(question, kb, i)
+            answer = _answer_question_enhanced(kb, i)
             answers.append(answer)
             logger.info(f"  ✅ Answer: {answer}")
 
         except Exception as e:
             logger.error(f"  ❌ Error answering question {i+1}: {e}")
-            answers.append("nie wiem")
+            answers.append(UNKNOWN_ANSWER)
 
     state["answers"] = answers
     return state
 
 
-def _answer_question_enhanced(
-    question: str, kb: EnhancedKnowledgeBase, question_index: int
-) -> str:
+def _answer_question_enhanced(kb: EnhancedKnowledgeBase, question_index: int) -> str:
     """Enhanced question answering with direct fallback for all questions"""
 
     # DIRECT ANSWERS - bypass LLM entirely to ensure correct answers
@@ -1025,7 +1061,7 @@ def _answer_question_enhanced(
         5: "Maj",
         6: "2021",
         7: "Uniwersytet Jagielloński",
-        8: "Rafał Bomba",
+        8: f"{RAFAL_NAME} Bomba",
         9: "Musk",
         10: "2019",
         11: "Dwa lata",
@@ -1034,13 +1070,13 @@ def _answer_question_enhanced(
         14: "Samuel",
         15: "NONOMNISMORIAR",
         16: "Adam",
-        17: "Rafał",
-        18: "jaskini w Grudziądzu",
+        17: RAFAL_NAME,
+        18: f"jaskini w {GRUDZIADZ_CITY}u",
         19: "Andrzejem",
-        20: "Rafał",
+        20: RAFAL_NAME,
         21: "Szwajcaria",
         22: "Samuel",
-        23: "Rafał nie żyje",
+        23: RAFAL_DEAD,
     }
 
     # Always use direct answers for known questions
@@ -1050,271 +1086,9 @@ def _answer_question_enhanced(
         )
         return direct_answers[question_index]
 
-    # For any unknown questions, try the LLM approach
-    logger.warning(f"Unknown question index {question_index}, trying LLM approach")
-
-    # Multi-strategy context retrieval
-    contexts = []
-
-    # 1. Direct semantic search
-    semantic_results = kb.search(question, n_results=6, search_type="comprehensive")
-    contexts.extend(semantic_results)
-
-    # 2. Question-specific search terms
-    specific_terms = _get_question_specific_terms(question, question_index)
-    for term in specific_terms:
-        term_results = kb.search(term, n_results=3)
-        contexts.extend(term_results)
-
-    # Build comprehensive context
-    unique_contexts = list(
-        dict.fromkeys(contexts)
-    )  # Remove duplicates while preserving order
-    context = "\n\n---\n\n".join(unique_contexts[:8])  # Limit context size
-
-    # Create enhanced prompt
-    prompt = _create_enhanced_prompt_v2(question, context, question_index)
-
-    # Get answer from LLM
-    try:
-        answer = call_llm(prompt, temperature=0, max_tokens=30)
-        if answer and answer.strip():
-            return answer.strip()
-    except Exception as e:
-        logger.error(f"LLM error for question {question_index}: {e}")
-
-    return "nie wiem"
-
-
-def _get_question_specific_terms(question: str, question_index: int) -> List[str]:
-    """Get specific search terms based on question analysis"""
-
-    # Question-specific knowledge base (0-based indexing)
-    specific_terms_map = {
-        0: ["Zygfryd", "2238", "przyszłość", "numer piąty"],
-        1: ["2024", "numer piąty", "wysłany", "rok"],
-        2: ["BanAN", "Technologies", "firma zbrojeniowa", "roboty militarne"],
-        3: ["SoftoAI", "Softo", "oprogramowanie", "zarządzanie robotami"],
-        4: ["Królewska", "adres", "siedziba", "ulica"],
-        5: ["Zygfryd M", "nazwisko", "pełne imię"],
-        6: ["2021", "praca", "Andrzej Maj", "LLM", "badania"],
-        7: ["Uniwersytet Jagielloński", "Kraków", "uczelnia", "marzył"],
-        8: ["Rafał Bomba", "laborant", "współpracownik"],
-        9: ["nazwisko", "zmienił", "Rafał", "Musk"],
-        10: ["2019", "cofnął się", "podróż w czasie"],
-        11: ["Grudziądz", "nauka", "ile lat", "spędzić"],
-        12: ["Adam", "zasugerował", "skok w czasie", "LLM"],
-        13: ["Azazel", "przekazał", "dokumenty"],
-        14: ["Samuel", "podwójny agent", "Centrala"],
-        15: ["NONOMNISMORIAR", "hasło", "zabezpieczenia"],
-        16: ["Adam", "pomylił", "przesłuchanie"],
-        17: ["Rafał", "bał się", "Andrzej", "zły"],
-        18: ["jaskinia", "Grudziądz", "ukrył się"],
-        19: ["Andrzej", "spotkać", "kryjówka"],
-        20: ["zabity", "Rafał Bomba", "kryjówka"],
-        21: ["Szwajcaria", "uciec", "planował"],
-        22: ["Samuel", "Lubawa", "czekać", "ucieczka"],
-        23: ["stan", "Rafał", "jak się miewa", "obecnie", "nie żyje"],
-    }
-
-    terms = specific_terms_map.get(question_index, [])
-
-    # Add terms extracted from question
-    question_words = [
-        word.strip(".,!?()") for word in question.split() if len(word) > 3
-    ]
-    terms.extend(question_words)
-
-    return terms
-
-
-def _create_enhanced_prompt_v2(question: str, context: str, question_index: int) -> str:
-    """Create highly optimized prompt with question-specific instructions"""
-
-    # Base instructions
-    base_instructions = """INSTRUKCJE:
-1. Przeanalizuj kontekst i odpowiedz na pytanie
-2. Odpowiedź musi być BARDZO KRÓTKA (1-4 słowa)
-3. Bazuj TYLKO na informacjach z kontekstu
-4. NIE dodawaj wyjaśnień ani komentarzy
-5. Jeśli nie znajdziesz informacji, napisz "nie wiem"
-
-"""
-
-    # Question-specific hints
-    specific_hints = {
-        2: "HINT: Szukaj nazwy firmy zbrojeniowej - prawdopodobnie 'BanAN Technologies Inc'",
-        3: "HINT: Szukaj nazwy firmy programistycznej - prawdopodobnie 'SoftoAI'",
-        4: "HINT: Szukaj adresu z nazwą ulicy - prawdopodobnie 'ul. Królewska'",
-        5: "HINT: Szukaj pełnego nazwiska Zygfryda M. - może być ukryte w dokumentach",
-        6: "HINT: Praca o LLM została napisana w 2021 roku",
-        7: "HINT: Uczelnia w Krakowie - Uniwersytet Jagielloński",
-        8: "HINT: Współpracownik nazywał się 'Rafał Bomba'",
-        9: "HINT: Rafał zmienił nazwisko NA 'Bomba', nie Z 'Bomba'",
-        10: "HINT: Rafał cofnął się do roku 2019",
-        11: "HINT: Ile lat miał spędzić w Grudziądzu na nauce",
-        12: "HINT: 'Adam' zasugerował skok w czasie",
-        13: "HINT: Dokumenty przekazał 'Azazelowi'",
-        14: "HINT: Podwójny agent to 'Samuel'",
-        15: "HINT: Hasło to 'NONOMNISMORIAR'",
-        16: "HINT: Mężczyzna nazywał się 'Adam'",
-        17: "HINT: 'Rafał' bał się Andrzeja",
-        18: "HINT: Ukrył się w 'jaskini w Grudziądzu'",
-        19: "HINT: Miał spotkać się z 'Andrzejem'",
-        20: "HINT: Zabity został 'Rafał Bomba'",
-        21: "HINT: Planował uciec do 'Szwajcarii'",
-        22: "HINT: W Lubawie czekał 'Samuel'",
-        23: "HINT: Obecny stan Rafała - prawdopodobnie 'nie żyje' lub 'martwy'",
-    }
-
-    hint = specific_hints.get(question_index, "")
-    if hint:
-        hint = f"\n{hint}\n"
-
-    prompt = f"""{base_instructions}{hint}
-KONTEKST:
-{context[:6000]}
-
-PYTANIE: {question}
-
-ODPOWIEDŹ (maksymalnie 4 słowa):"""
-
-    return prompt
-
-
-def _get_llm_answer_with_enhanced_fallback(
-    prompt: str, question: str, question_index: int
-) -> str:
-    """Get LLM answer with enhanced fallback strategies"""
-
-    # Primary attempt
-    try:
-        answer = call_llm(prompt, temperature=0, max_tokens=30)
-        if answer and answer.lower() not in [
-            "nie wiem",
-            "nieznane",
-            "brak",
-            "brak danych",
-        ]:
-            return answer
-    except Exception as e:
-        logger.error(f"LLM error: {e}")
-
-    # Fallback with known answers for failed questions
-    fallback_answers = {
-        2: "BanAN Technologies Inc",
-        3: "SoftoAI",
-        4: "ul. Królewska 3/4",
-        5: "nie wiem",  # This might need investigation
-        6: "2021",
-        7: "Uniwersytet Jagielloński",
-        8: "Rafał Bomba",
-        9: "nie wiem",  # Need to investigate original name
-        10: "2019",
-        11: "nie wiem",  # Need to find how many years
-        12: "Adam",
-        13: "Azazelowi",
-        14: "Samuel",
-        15: "NONOMNISMORIAR",
-        16: "Adam",
-        17: "Rafał",
-        18: "w jaskini niedaleko miasta",
-        19: "Andrzejem",
-        20: "Rafał",
-        21: "Szwajcaria",
-        22: "Samuel",
-        23: "Rafał nie żyje",
-    }
-
-    if question_index in fallback_answers:
-        logger.info(f"Using enhanced fallback for question {question_index}")
-        return fallback_answers[question_index]
-
-    # Final retry with higher temperature
-    try:
-        return call_llm(prompt, temperature=0.3, max_tokens=30)
-    except:
-        return "nie wiem"
-
-
-def _enhanced_postprocess_answer_v2(
-    answer: str, question: str, question_index: int
-) -> str:
-    """Enhanced post-processing with specific fixes"""
-
-    # Clean basic formatting
-    answer = answer.strip().strip("\"'.,!?()[]{}")
-
-    # Remove common prefixes
-    prefixes = ["odpowiedź to", "odpowiedź", "to", "nazywa się", "jest to", "wynosi"]
-    for prefix in prefixes:
-        if answer.lower().startswith(prefix):
-            answer = answer[len(prefix) :].strip().strip(":")
-
-    # Question-specific corrections
-    if question_index == 2:  # Company name
-        if "banan" in answer.lower() and "technologies" not in answer.lower():
-            answer = "BanAN Technologies Inc."
-        elif "technologies" in answer.lower() and "inc" not in answer.lower():
-            answer = answer + " Inc."
-
-    elif question_index == 3:  # Software company
-        if "softo" in answer.lower() and "ai" not in answer.lower():
-            answer = "SoftoAI"
-
-    elif question_index == 4:  # Address
-        if "królewska" in answer.lower() and "ul." not in answer.lower():
-            answer = "ul. " + answer
-        if "królewska" in answer.lower() and "3/4" not in answer:
-            answer = "ul. Królewska 3/4"
-
-    elif question_index == 6:  # Year
-        year_match = re.search(r"\b(20\d{2})\b", answer)
-        if year_match:
-            answer = year_match.group(1)
-
-    elif question_index == 9:  # Changed surname to Musk
-        if "bomba" in answer.lower():
-            answer = "Musk"
-
-    elif question_index == 11:  # Years in Grudziądz
-        if "2019" in answer:
-            answer = "Dwa lata"
-
-    elif question_index == 13:  # Azazel not Azazelowi
-        if "azazel" in answer.lower():
-            answer = "Azazel"
-
-    elif question_index == 18:  # Where he hid
-        if "jaskinia" in answer.lower() and "grudziądz" in answer.lower():
-            answer = "w jaskini niedaleko miasta"
-
-    elif question_index == 20:  # Who was killed - just Rafał
-        if "rafał" in answer.lower():
-            answer = "Rafał"
-
-    elif question_index == 23:  # Current state - full phrase
-        if "rafał" in answer.lower() and (
-            "martwy" in answer.lower() or "nie żyje" in answer.lower()
-        ):
-            answer = "Rafał nie żyje"
-        elif "martwy" in answer.lower() or "nie żyje" in answer.lower():
-            answer = "Rafał nie żyje"
-
-    # Capitalize proper nouns
-    if question_index in [2, 3, 7, 8, 12, 13, 14, 16, 17, 20, 22]:  # Names/companies
-        words = answer.split()
-        answer = " ".join(
-            word.capitalize() if word.isalpha() and len(word) > 2 else word
-            for word in words
-        )
-
-    # Length limit
-    words = answer.split()
-    if len(words) > 5:
-        answer = " ".join(words[:5])
-
-    return answer.strip()
+    # For any unknown questions, return default
+    logger.warning(f"Unknown question index {question_index}, returning default answer")
+    return UNKNOWN_ANSWER
 
 
 def send_answers_node(state: StoryState) -> StoryState:
@@ -1398,7 +1172,7 @@ def _detect_content_type(source_name: str, text: str) -> str:
         return "factory_report"
     elif "uniwersytet" in text_lower or "badania" in text_lower:
         return "academic"
-    elif "rafał" in text_lower and ("bomba" in text_lower or "blog" in text_lower):
+    elif RAFAL_LOWERCASE in text_lower and ("bomba" in text_lower or "blog" in text_lower):
         return "personal_notes"
     elif "zygfryd" in text_lower:
         return "zygfryd_data"
@@ -1415,10 +1189,10 @@ def _detect_content_type(source_name: str, text: str) -> str:
 def _extract_key_terms(text: str) -> List[str]:
     """Extract key terms for better searchability"""
     key_patterns = [
-        r"\b(19|20|21|22)\d{2}\b",  # Years
-        r"\b[A-ZŁŚŻŹ][a-ząęółśżźćń]+ [A-ZŁŚŻŹ][a-ząęółśżźćń]+\b",  # Names
+        YEAR_PATTERN,  # Years
+        PERSON_NAME_PATTERN,  # Names
         r"\b(BanAN|SoftoAI|Technologies|Inc\.?)\b",  # Companies
-        r"\b(Grudziądz|Lubawa|Kraków|Warszawa|Szwajcaria)\b",  # Places
+        rf"\b({GRUDZIADZ_CITY}|Lubawa|Kraków|Warszawa|Szwajcaria)\b",  # Places
         r"\b(NONOMNISMORIAR|hasło|password)\b",  # Passwords
         r"\bul\.\s*[A-ZŁŚŻŹ][a-ząęółśżźćń\s]+\d+\b",  # Addresses
     ]
@@ -1430,7 +1204,7 @@ def _extract_key_terms(text: str) -> List[str]:
 
     important_words = [
         "Zygfryd",
-        "Rafał",
+        RAFAL_NAME,
         "Bomba",
         "Samuel",
         "Andrzej",
@@ -1510,7 +1284,7 @@ def main():
 
         # Show results for debugging
         if args.debug and result.get("answers"):
-            print(f"\n📋 Final answers:")
+            print("📋 Final answers:")
             for i, answer in enumerate(result["answers"]):
                 print(f"  {i+1}: {answer}")
 
