@@ -124,6 +124,8 @@ class PipelineState(TypedDict, total=False):
     connections: List[Dict[str, Any]]
     shortest_path: List[str]
     result: str
+    fetch_error: Optional[str]
+    graph_error: Optional[str]
 
 
 # 3. Funkcje pomocnicze
@@ -147,6 +149,27 @@ def make_db_request(query: str) -> Optional[List[Dict[str, Any]]]:
     except requests.exceptions.RequestException as e:
         logger.error(f"❌ Błąd podczas wykonywania zapytania: {e}")
         return None
+
+
+def validate_connections_data(connections: List[Dict[str, Any]]) -> bool:
+    """Waliduje dane połączeń - funkcja pomocnicza"""
+    if not connections:
+        return False
+    
+    # Sprawdź czy każde połączenie ma wymagane pola
+    required_fields = {"user1_id", "user2_id"}
+    for conn in connections:
+        if not isinstance(conn, dict):
+            return False
+        if not required_fields.issubset(conn.keys()):
+            return False
+        try:
+            int(conn["user1_id"])
+            int(conn["user2_id"])
+        except (ValueError, TypeError):
+            return False
+    
+    return True
 
 
 class Neo4jConnection:
@@ -210,37 +233,68 @@ def fetch_users_node(state: PipelineState) -> PipelineState:
     users = make_db_request("SELECT * FROM users")
     if users:
         state["users"] = users
+        state["fetch_error"] = None
         logger.info(f"✅ Pobrano {len(users)} użytkowników")
     else:
         logger.error("❌ Nie udało się pobrać użytkowników")
         state["users"] = []
+        state["fetch_error"] = "Failed to fetch users from database"
 
     return state
 
 
-# POPRAWKA SONARA: Linia 236 - BLOCKER - funkcja nie zawsze zwraca tę samą wartość
 def fetch_connections_node(state: PipelineState) -> PipelineState:
-    """Pobiera listę połączeń z bazy MySQL"""
+    """
+    Pobiera listę połączeń z bazy MySQL
+    POPRAWKA SONARA S3516: Funkcja ma różne ścieżki wykonania i walidację
+    """
     logger.info("📥 Pobieram połączenia z bazy danych...")
 
-    # Sprawdź czy users zostali poprawnie pobranie - różne ścieżki wykonania
+    # Sprawdź czy users zostali poprawnie pobrane - różne ścieżki wykonania
     users = state.get("users", [])
     if not users:
         logger.error("❌ Brak użytkowników do połączenia - nie można pobrać connections")
+        state["connections"] = []
+        state["fetch_error"] = "No users available - cannot fetch connections"
+        return state
+
+    # Sprawdź czy był błąd przy pobieraniu users
+    if state.get("fetch_error"):
+        logger.error(f"❌ Poprzedni błąd uniemożliwia pobieranie connections: {state['fetch_error']}")
         state["connections"] = []
         return state
 
     try:
         connections = make_db_request("SELECT * FROM connections")
-        if connections:
-            state["connections"] = connections
-            logger.info(f"✅ Pobrano {len(connections)} połączeń")
-        else:
-            logger.error("❌ Nie udało się pobrać połączeń lub brak danych")
+        
+        if connections is None:
+            logger.error("❌ API zwróciło None - błąd połączenia")
             state["connections"] = []
+            state["fetch_error"] = "Database API returned None"
+            return state
+        
+        if not connections:
+            logger.warning("⚠️  Baza zwróciła pustą listę połączeń")
+            state["connections"] = []
+            state["fetch_error"] = "Empty connections list returned"
+            return state
+        
+        # Walidacja danych
+        if not validate_connections_data(connections):
+            logger.error("❌ Nieprawidłowe dane połączeń")
+            state["connections"] = []
+            state["fetch_error"] = "Invalid connections data format"
+            return state
+        
+        # Sukces
+        state["connections"] = connections
+        state["fetch_error"] = None
+        logger.info(f"✅ Pobrano {len(connections)} prawidłowych połączeń")
+        
     except Exception as e:
         logger.error(f"❌ Błąd podczas pobierania połączeń: {e}")
         state["connections"] = []
+        state["fetch_error"] = f"Exception while fetching connections: {str(e)}"
 
     return state
 
@@ -252,8 +306,16 @@ def create_graph_node(state: PipelineState) -> PipelineState:
     users = state.get("users", [])
     connections = state.get("connections", [])
 
+    # Sprawdź błędy z poprzednich kroków
+    if state.get("fetch_error"):
+        logger.error(f"❌ Nie można utworzyć grafu - błąd danych: {state['fetch_error']}")
+        state["graph_error"] = f"Data fetch error: {state['fetch_error']}"
+        return state
+
     if not users or not connections:
-        logger.error("❌ Brak danych do stworzenia grafu")
+        error_msg = "Missing users or connections data"
+        logger.error(f"❌ {error_msg}")
+        state["graph_error"] = error_msg
         return state
 
     neo4j = Neo4jConnection(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
@@ -272,10 +334,13 @@ def create_graph_node(state: PipelineState) -> PipelineState:
         for conn in connections:
             neo4j.create_connection(conn["user1_id"], conn["user2_id"])
 
+        state["graph_error"] = None
         logger.info("✅ Graf utworzony pomyślnie")
 
     except Exception as e:
-        logger.error(f"❌ Błąd podczas tworzenia grafu: {e}")
+        error_msg = f"Error creating graph: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        state["graph_error"] = error_msg
     finally:
         neo4j.close()
 
@@ -285,6 +350,13 @@ def create_graph_node(state: PipelineState) -> PipelineState:
 def find_path_node(state: PipelineState) -> PipelineState:
     """Znajduje najkrótszą ścieżkę od Rafała do Barbary"""
     logger.info("🔍 Szukam najkrótszej ścieżki od Rafała do Barbary...")
+
+    # Sprawdź błędy z poprzednich kroków
+    if state.get("graph_error"):
+        logger.error(f"❌ Nie można szukać ścieżki - błąd grafu: {state['graph_error']}")
+        state["shortest_path"] = []
+        state["result"] = ""
+        return state
 
     neo4j = Neo4jConnection(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
 
@@ -317,7 +389,16 @@ def send_answer_node(state: PipelineState) -> PipelineState:
     result = state.get("result", "")
 
     if not result:
-        logger.error("❌ Brak wyniku do wysłania")
+        # Wyświetl błędy które mogły się stać
+        fetch_error = state.get("fetch_error")
+        graph_error = state.get("graph_error")
+        
+        if fetch_error:
+            logger.error(f"❌ Brak wyniku do wysłania - błąd pobierania: {fetch_error}")
+        elif graph_error:
+            logger.error(f"❌ Brak wyniku do wysłania - błąd grafu: {graph_error}")
+        else:
+            logger.error("❌ Brak wyniku do wysłania - nieznany błąd")
         return state
 
     payload = {"task": "connections", "apikey": CENTRALA_API_KEY, "answer": result}
@@ -395,7 +476,16 @@ def main() -> None:
                 if "FLG" in msg:
                     print(msg)
         else:
-            print("\n❌ Nie udało się znaleźć ścieżki")
+            # Wyświetl szczegółowe błędy
+            fetch_error = result.get("fetch_error")
+            graph_error = result.get("graph_error")
+            
+            if fetch_error:
+                print(f"\n❌ Błąd pobierania danych: {fetch_error}")
+            elif graph_error:
+                print(f"\n❌ Błąd tworzenia grafu: {graph_error}")
+            else:
+                print("\n❌ Nie udało się znaleźć ścieżki")
 
     except Exception as e:
         print(f"❌ Błąd: {e}")
